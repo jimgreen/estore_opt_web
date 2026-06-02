@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>注册 - 储能优化调度系统</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+  <main class="auth-shell">
+    <section class="auth-hero">
+      <a class="brand" href="login.html" data-i18n="brand">储能优化调度系统</a>
+      <h1 data-i18n="home.title">低温风光柴储电热耦合优化调度</h1>
+      <p data-i18n="auth.registerIntro">创建本地账号。首个注册用户自动成为管理员。</p>
+    </section>
+    <section class="auth-card">
+      <header>
+        <h2 data-i18n="auth.registerTitle">注册</h2>
+        <div class="language-switch" data-language-switch></div>
+      </header>
+      <form class="auth-form" data-auth-form="register">
+        <label><span data-i18n="auth.username">用户名</span><input name="username" autocomplete="username" required minlength="3"></label>
+        <label><span data-i18n="auth.password">密码</span><input name="password" type="password" autocomplete="new-password" required minlength="6"></label>
+        <label><span data-i18n="auth.confirmPassword">确认密码</span><input name="confirm_password" type="password" autocomplete="new-password" required minlength="6"></label>
+        <div class="auth-status" data-auth-status hidden></div>
+        <button class="primary" type="submit" data-i18n="auth.registerAction">创建账号</button>
+      </form>
+      <div class="auth-links">
+        <a href="login.html" data-i18n="auth.toLogin">已有账号？登录</a>
+      </div>
+    </section>
+  </main>
+  <script src="assets/common.js"></script>
+  <script src="assets/i18n.js"></script>
+  <script src="assets/login.js"></script>
+</body>
+</html>

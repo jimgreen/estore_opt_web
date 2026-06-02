@@ -1,0 +1,242 @@
+const I18N = {
+  zh: {
+    "brand": "储能优化调度系统",
+    "nav.home": "系统首页",
+    "nav.schemes": "输入配置",
+    "nav.solve": "优化求解",
+    "nav.verify": "方案校核",
+    "nav.comparison": "结果对比",
+    "nav.batch": "批量计算",
+    "auth.user": "当前用户",
+    "auth.logout": "退出",
+    "auth.loginTitle": "登录",
+    "auth.registerTitle": "注册",
+    "auth.loginIntro": "登录后进入储能优化调度系统。",
+    "auth.registerIntro": "创建本地账号。首个注册用户自动成为管理员。",
+    "auth.username": "用户名",
+    "auth.password": "密码",
+    "auth.confirmPassword": "确认密码",
+    "auth.loginAction": "登录系统",
+    "auth.registerAction": "创建账号",
+    "auth.toRegister": "没有账号？注册",
+    "auth.toLogin": "已有账号？登录",
+    "auth.passwordMismatch": "两次输入的密码不一致",
+    "auth.failed": "操作失败",
+    "home.title": "低温风光柴储电热耦合优化调度",
+    "home.subtitle": "围绕 Excel 模型定义文件管理多套方案，启动单次 MILP 优化求解、方案校核与批量计算，并横向比较优化与仿真结果。",
+    "home.primary": "配置输入",
+    "home.secondary": "进入优化求解",
+    "home.openFeature": "进入当前功能",
+    "home.schemeCount": "方案数量",
+    "home.queuedCount": "排队任务",
+    "home.runningCount": "运行任务",
+    "home.flowTitle": "业务流程",
+    "feature.schemes.title": "输入配置",
+    "feature.schemes.desc": "导入、复制、预览和编辑模型定义工作簿。",
+    "feature.solve.title": "优化求解",
+    "feature.solve.desc": "指定方案与求解参数，查看日志、诊断和结果摘要。",
+    "feature.batch.title": "批量计算",
+    "feature.batch.desc": "选择多方案，设置并行度，统一跟踪队列状态。",
+    "feature.verify.title": "方案校核",
+    "feature.verify.desc": "按详细公式回放优化调度曲线，估算线性化精度。",
+    "feature.comparison.title": "结果对比",
+    "feature.comparison.desc": "多选优化和校核结果，横向比较关键指标。",
+    "schemes.files": "方案文件",
+    "common.refresh": "刷新",
+    "schemes.newName": "新方案名称",
+    "schemes.description": "说明",
+    "schemes.create": "新建",
+    "schemes.importName": "导入方案名称",
+    "schemes.importExcel": "导入 Excel",
+    "schemes.current": "当前方案",
+    "schemes.none": "未选择",
+    "schemes.copy": "复制方案",
+    "schemes.delete": "删除方案",
+    "schemes.save": "保存",
+    "schemes.saveHint": "分页显示完整工作表，保存时仅提交已编辑的单元格。",
+    "solve.task": "单方案任务",
+    "solve.title": "优化求解",
+    "solve.start": "开始",
+    "solve.recent": "最近任务",
+    "solve.detail": "任务详情",
+    "solve.verifyTask": "校核此任务",
+    "solve.cancel": "停止/离队",
+    "solve.log": "过程日志",
+    "solve.summary": "结果摘要",
+    "verify.subtitle": "后验精度评估",
+    "verify.title": "方案校核",
+    "verify.start": "开始",
+    "verify.tasks": "校核任务",
+    "verify.detail": "校核详情",
+    "verify.summary": "校核摘要",
+    "verify.rows": "逐时刻偏差预览",
+    "comparison.list": "结果列表",
+    "comparison.opt": "优化求解",
+    "comparison.verify": "方案校核",
+    "comparison.title": "结果对比",
+    "comparison.pick": "请选择 1 个或多个结果",
+    "comparison.latest": "选择最近结果",
+    "comparison.clear": "清空选择",
+    "comparison.table": "指标对比表",
+    "comparison.bars": "关键指标条形对比",
+    "batch.subtitle": "多方案任务",
+    "batch.title": "批量计算",
+    "batch.selectSchemes": "选择方案",
+    "batch.enqueue": "加入批量计算队列",
+    "batch.queue": "任务队列",
+    "form.scheme": "方案",
+    "form.solver": "求解器",
+    "form.mode": "模式",
+    "form.dt": "时间步长(分钟)",
+    "form.timeLimit": "时间上限(秒)",
+    "form.gap": "MIP Gap",
+    "form.currentSegments": "电流分段数",
+    "form.socGrid": "SOC网格宽度",
+    "form.threads": "线程数",
+    "form.currentMode": "电流模式",
+    "form.tightTemp": "使用紧温度边界",
+    "form.warmStart": "粗模型热启动",
+    "form.buildOnly": "仅建模检查",
+    "form.maxParallel": "并行任务数"
+  },
+  en: {
+    "brand": "EStore Optimization Dispatch",
+    "nav.home": "Home",
+    "nav.schemes": "Input Config",
+    "nav.solve": "Optimization",
+    "nav.verify": "Scenario Check",
+    "nav.comparison": "Result Compare",
+    "nav.batch": "Batch Runs",
+    "auth.user": "User",
+    "auth.logout": "Sign out",
+    "auth.loginTitle": "Sign in",
+    "auth.registerTitle": "Create account",
+    "auth.loginIntro": "Sign in to enter the energy storage optimization system.",
+    "auth.registerIntro": "Create a local account. The first user becomes administrator.",
+    "auth.username": "Username",
+    "auth.password": "Password",
+    "auth.confirmPassword": "Confirm password",
+    "auth.loginAction": "Sign in",
+    "auth.registerAction": "Create account",
+    "auth.toRegister": "No account? Register",
+    "auth.toLogin": "Already have an account? Sign in",
+    "auth.passwordMismatch": "The two passwords do not match",
+    "auth.failed": "Operation failed",
+    "home.title": "Low-temperature renewable-diesel-storage electro-thermal dispatch",
+    "home.subtitle": "Manage multiple Excel-based scenarios, launch MILP optimization, run scenario checks and batch jobs, then compare optimization and simulation results.",
+    "home.primary": "Configure Inputs",
+    "home.secondary": "Start Optimization",
+    "home.openFeature": "Open Selected Module",
+    "home.schemeCount": "Scenarios",
+    "home.queuedCount": "Queued",
+    "home.runningCount": "Running",
+    "home.flowTitle": "Workflow",
+    "feature.schemes.title": "Input Config",
+    "feature.schemes.desc": "Import, copy, preview and edit model definition workbooks.",
+    "feature.solve.title": "Optimization",
+    "feature.solve.desc": "Select a scenario and solver parameters, then inspect logs and summaries.",
+    "feature.batch.title": "Batch Runs",
+    "feature.batch.desc": "Select multiple scenarios, set parallelism and track the queue.",
+    "feature.verify.title": "Scenario Check",
+    "feature.verify.desc": "Replay dispatch curves with detailed formulas to estimate linearization accuracy.",
+    "feature.comparison.title": "Result Compare",
+    "feature.comparison.desc": "Compare optimization and verification metrics across selected results.",
+    "schemes.files": "Scenario Inputs",
+    "common.refresh": "Refresh",
+    "schemes.newName": "New scenario name",
+    "schemes.description": "Description",
+    "schemes.create": "Create",
+    "schemes.importName": "Imported scenario name",
+    "schemes.importExcel": "Import Excel",
+    "schemes.current": "Current Scenario",
+    "schemes.none": "None selected",
+    "schemes.copy": "Copy",
+    "schemes.delete": "Delete",
+    "schemes.save": "Save",
+    "schemes.saveHint": "The full worksheet is paged; only edited cells are saved.",
+    "solve.task": "Single Scenario",
+    "solve.title": "Optimization",
+    "solve.start": "Start",
+    "solve.recent": "Recent Tasks",
+    "solve.detail": "Task Detail",
+    "solve.verifyTask": "Check This Task",
+    "solve.cancel": "Stop / Dequeue",
+    "solve.log": "Process Log",
+    "solve.summary": "Result Summary",
+    "verify.subtitle": "Post-solve Accuracy Assessment",
+    "verify.title": "Scenario Check",
+    "verify.start": "Start",
+    "verify.tasks": "Check Tasks",
+    "verify.detail": "Check Detail",
+    "verify.summary": "Check Summary",
+    "verify.rows": "Time-step Deviation Preview",
+    "comparison.list": "Result List",
+    "comparison.opt": "Optimization",
+    "comparison.verify": "Scenario Check",
+    "comparison.title": "Result Compare",
+    "comparison.pick": "Select one or more results",
+    "comparison.latest": "Select Latest",
+    "comparison.clear": "Clear",
+    "comparison.table": "Metric Comparison Table",
+    "comparison.bars": "Key Metric Bars",
+    "batch.subtitle": "Multi-scenario Jobs",
+    "batch.title": "Batch Runs",
+    "batch.selectSchemes": "Select Scenarios",
+    "batch.enqueue": "Add to Batch Queue",
+    "batch.queue": "Task Queue",
+    "form.scheme": "Scenario",
+    "form.solver": "Solver",
+    "form.mode": "Mode",
+    "form.dt": "Step (minutes)",
+    "form.timeLimit": "Time Limit (s)",
+    "form.gap": "MIP Gap",
+    "form.currentSegments": "Current Segments",
+    "form.socGrid": "SOC Grid Width",
+    "form.threads": "Threads",
+    "form.currentMode": "Current Mode",
+    "form.tightTemp": "Use Tight Temperature Bounds",
+    "form.warmStart": "Coarse Warm Start",
+    "form.buildOnly": "Build Only",
+    "form.maxParallel": "Parallel Jobs"
+  }
+};
+
+function currentLang() {
+  return localStorage.getItem("estore_lang") || "zh";
+}
+
+function t(key) {
+  const lang = currentLang();
+  return I18N[lang]?.[key] || I18N.zh[key] || key;
+}
+
+function applyI18n() {
+  document.documentElement.lang = currentLang() === "en" ? "en" : "zh-CN";
+  document.querySelectorAll("[data-i18n]").forEach((node) => {
+    node.textContent = t(node.dataset.i18n);
+  });
+  document.querySelectorAll("[data-i18n-placeholder]").forEach((node) => {
+    node.setAttribute("placeholder", t(node.dataset.i18nPlaceholder));
+  });
+  document.querySelectorAll("[data-i18n-title]").forEach((node) => {
+    node.setAttribute("title", t(node.dataset.i18nTitle));
+  });
+  document.querySelectorAll("[data-language-switch]").forEach((node) => {
+    node.innerHTML = `
+      <button type="button" data-lang="zh" class="${currentLang() === "zh" ? "active" : ""}">中</button>
+      <button type="button" data-lang="en" class="${currentLang() === "en" ? "active" : ""}">EN</button>
+    `;
+  });
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  applyI18n();
+  document.body.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-lang]");
+    if (!button) return;
+    localStorage.setItem("estore_lang", button.dataset.lang);
+    applyI18n();
+  });
+});
+
+window.t = t;

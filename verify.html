@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>方案校核 - 储能优化调度系统</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="index.html" data-i18n="brand">储能优化调度系统</a>
+      <nav class="main-nav" aria-label="主功能导航">
+        <a href="index.html" data-i18n="nav.home">系统首页</a>
+        <a href="schemes.html" data-i18n="nav.schemes">输入配置</a>
+        <a href="solve.html" data-i18n="nav.solve">优化求解</a>
+        <a class="active" href="verify.html" data-i18n="nav.verify">方案校核</a>
+        <a href="comparison.html" data-i18n="nav.comparison">结果对比</a>
+        <a href="batch.html" data-i18n="nav.batch">批量计算</a>
+      </nav>
+      <div class="topbar-tools">
+        <div class="language-switch" data-language-switch></div>
+        <div class="user-status" data-auth-user hidden>
+          <span data-i18n="auth.user">当前用户</span><strong data-auth-username></strong><em data-auth-role></em>
+          <button type="button" data-logout data-i18n="auth.logout">退出</button>
+        </div>
+      </div>
+    </header>
+
+    <section class="workspace">
+      <div id="verifyError" class="status-error" hidden></div>
+      <section class="command-panel">
+        <div>
+          <span class="section-label" data-i18n="verify.subtitle">后验精度评估</span>
+          <h1 data-i18n="verify.title">方案校核</h1>
+        </div>
+        <form id="verifyForm" class="inline-form solve-start-form">
+          <label><span data-i18n="form.scheme">方案</span><select name="scheme" required></select></label>
+          <span class="sheet-meta">校核沿用“输入配置 > 计算参数”中的求解器、模式和线性化参数。</span>
+          <div class="form-actions">
+            <button class="primary" type="submit" data-i18n="verify.start">开始</button>
+            <button id="queueVerificationTask" type="button">排队</button>
+            <button id="stopVerificationTask" class="danger" type="button" disabled>停止</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="result-layout">
+        <aside class="side-panel compact">
+          <h2 data-i18n="verify.tasks">校核任务</h2>
+          <div id="verificationList" class="task-list"></div>
+        </aside>
+        <section class="main-panel">
+          <div class="panel-head">
+            <h2 id="verificationTitle">校核详情</h2>
+            <div class="summary-actions">
+              <button id="cancelVerificationTask" class="danger small" type="button" disabled>停止/离队</button>
+            </div>
+          </div>
+          <div id="verificationMetrics" class="metric-grid"></div>
+          <div class="split-results">
+            <div>
+              <h3 data-i18n="verify.summary">校核摘要</h3>
+              <pre id="verificationSummary" class="summary-box">请选择或启动一个校核任务。</pre>
+            </div>
+            <div>
+              <h3 data-i18n="verify.rows">逐时刻偏差预览</h3>
+              <div id="verificationRows" class="data-table"></div>
+            </div>
+          </div>
+        </section>
+      </section>
+    </section>
+  </main>
+  <script src="assets/common.js"></script>
+  <script src="assets/i18n.js"></script>
+  <script src="assets/auth.js"></script>
+  <script src="assets/verify.js"></script>
+</body>
+</html>

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>批量计算 - 储能优化调度系统</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="index.html" data-i18n="brand">储能优化调度系统</a>
+      <nav class="main-nav" aria-label="主功能导航">
+        <a href="index.html" data-i18n="nav.home">系统首页</a>
+        <a href="schemes.html" data-i18n="nav.schemes">输入配置</a>
+        <a href="solve.html" data-i18n="nav.solve">优化求解</a>
+        <a href="verify.html" data-i18n="nav.verify">方案校核</a>
+        <a href="comparison.html" data-i18n="nav.comparison">结果对比</a>
+        <a class="active" href="batch.html" data-i18n="nav.batch">批量计算</a>
+      </nav>
+      <div class="topbar-tools">
+        <div class="language-switch" data-language-switch></div>
+        <div class="user-status" data-auth-user hidden>
+          <span data-i18n="auth.user">当前用户</span><strong data-auth-username></strong><em data-auth-role></em>
+          <button type="button" data-logout data-i18n="auth.logout">退出</button>
+        </div>
+      </div>
+    </header>
+
+    <section class="workspace">
+      <div id="batchError" class="status-error" hidden></div>
+      <section class="command-panel">
+        <div class="task-board-toolbar">
+          <div class="task-type-tabs" role="tablist" aria-label="任务类型切换">
+            <button class="task-type-tab active" type="button" data-task-page="optimization" role="tab" aria-selected="true">优化求解任务</button>
+            <button class="task-type-tab" type="button" data-task-page="verification" role="tab" aria-selected="false">方案校核任务</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="main-panel">
+        <div class="panel-head">
+          <h2 data-i18n="batch.queue">任务队列</h2>
+          <button id="refreshTasks" class="small" type="button" data-i18n="common.refresh">刷新</button>
+        </div>
+        <section id="optimizationTaskSection" class="task-section active" data-task-section="optimization">
+          <div id="optimizationTaskTable" class="data-table"></div>
+        </section>
+        <section id="verificationTaskSection" class="task-section" data-task-section="verification" hidden>
+          <div id="verificationTaskTable" class="data-table"></div>
+        </section>
+      </section>
+    </section>
+  </main>
+  <script src="assets/common.js"></script>
+  <script src="assets/i18n.js"></script>
+  <script src="assets/auth.js"></script>
+  <script src="assets/batch.js"></script>
+</body>
+</html>

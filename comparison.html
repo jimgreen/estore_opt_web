@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>结果对比 - 储能优化调度系统</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="index.html" data-i18n="brand">储能优化调度系统</a>
+      <nav class="main-nav" aria-label="主功能导航">
+        <a href="index.html" data-i18n="nav.home">系统首页</a>
+        <a href="schemes.html" data-i18n="nav.schemes">输入配置</a>
+        <a href="solve.html" data-i18n="nav.solve">优化求解</a>
+        <a href="verify.html" data-i18n="nav.verify">方案校核</a>
+        <a class="active" href="comparison.html" data-i18n="nav.comparison">结果对比</a>
+        <a href="batch.html" data-i18n="nav.batch">批量计算</a>
+      </nav>
+      <div class="topbar-tools">
+        <div class="language-switch" data-language-switch></div>
+        <div class="user-status" data-auth-user hidden>
+          <span data-i18n="auth.user">当前用户</span><strong data-auth-username></strong><em data-auth-role></em>
+          <button type="button" data-logout data-i18n="auth.logout">退出</button>
+        </div>
+      </div>
+    </header>
+
+    <section class="workspace two-column">
+      <aside class="side-panel">
+        <div class="panel-head">
+          <h1 data-i18n="comparison.list">结果列表</h1>
+          <button class="small" id="refreshComparison" type="button" data-i18n="common.refresh">刷新</button>
+        </div>
+        <div class="comparison-filters">
+          <label><input type="checkbox" id="showOptimization" checked> <span data-i18n="comparison.opt">优化求解</span></label>
+          <label><input type="checkbox" id="showVerification" checked> <span data-i18n="comparison.verify">方案校核</span></label>
+        </div>
+        <div id="comparisonItemList" class="comparison-list"></div>
+      </aside>
+
+      <section class="main-panel">
+        <div id="comparisonError" class="status-error" hidden></div>
+        <section class="scheme-summary">
+          <div>
+            <span class="section-label" data-i18n="comparison.title">结果对比</span>
+            <h2 id="comparisonTitle">请选择 1 个或多个结果</h2>
+          </div>
+          <div class="summary-actions">
+            <button id="selectLatest" type="button" data-i18n="comparison.latest">选择最近结果</button>
+            <button id="clearSelection" type="button" data-i18n="comparison.clear">清空选择</button>
+          </div>
+        </section>
+
+        <div id="comparisonSummaryCards" class="metric-grid"></div>
+        <section class="comparison-section">
+          <h3 data-i18n="comparison.table">指标对比表</h3>
+          <div id="comparisonTable" class="data-table"></div>
+        </section>
+        <section class="comparison-section">
+          <h3 data-i18n="comparison.bars">关键指标条形对比</h3>
+          <div id="comparisonBars" class="bar-compare"></div>
+        </section>
+      </section>
+    </section>
+  </main>
+  <script src="assets/common.js"></script>
+  <script src="assets/i18n.js"></script>
+  <script src="assets/auth.js"></script>
+  <script src="assets/comparison.js"></script>
+</body>
+</html>

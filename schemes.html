@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>输入配置 - 储能优化调度系统</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="assets/app.css">
+</head>
+<body class="input-config-page">
+  <main class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="index.html" data-i18n="brand">储能优化调度系统</a>
+      <nav class="main-nav" aria-label="主功能导航">
+        <a href="index.html" data-i18n="nav.home">系统首页</a>
+        <a class="active" href="schemes.html" data-i18n="nav.schemes">输入配置</a>
+        <a href="solve.html" data-i18n="nav.solve">优化求解</a>
+        <a href="verify.html" data-i18n="nav.verify">方案校核</a>
+        <a href="comparison.html" data-i18n="nav.comparison">结果对比</a>
+        <a href="batch.html" data-i18n="nav.batch">批量计算</a>
+      </nav>
+      <div class="topbar-tools">
+        <div class="language-switch" data-language-switch></div>
+        <div class="user-status" data-auth-user hidden>
+          <span data-i18n="auth.user">当前用户</span><strong data-auth-username></strong><em data-auth-role></em>
+          <button type="button" data-logout data-i18n="auth.logout">退出</button>
+        </div>
+      </div>
+    </header>
+
+    <section class="workspace two-column">
+      <aside class="side-panel">
+        <div class="panel-head">
+          <h1 data-i18n="schemes.files">方案文件</h1>
+          <button class="small" id="refreshSchemes" type="button" data-i18n="common.refresh">刷新</button>
+        </div>
+        <input id="schemeSearch" class="scheme-search" type="search" placeholder="查找方案">
+        <div id="schemeList" class="scheme-list"></div>
+      </aside>
+
+      <section class="main-panel">
+        <div id="schemeError" class="status-error" hidden></div>
+        <form id="createSchemeForm" hidden>
+          <input name="name">
+          <input name="description">
+        </form>
+        <form id="uploadSchemeForm" hidden>
+          <input name="name">
+          <input name="file" type="file" accept=".xlsx,.xlsm">
+        </form>
+
+        <section class="scheme-summary">
+          <div>
+            <span class="section-label" data-i18n="schemes.current">当前方案</span>
+            <h2 id="currentSchemeTitle">未选择</h2>
+          </div>
+        </section>
+
+        <div id="sheetTabs" class="sheet-tabs"></div>
+        <section id="computeConfigView" class="compute-config-panel" hidden>
+          <div class="panel-head">
+            <div>
+              <span class="section-label">Excel 表单：计算参数</span>
+              <h2>计算参数</h2>
+            </div>
+            <div class="summary-actions">
+              <button id="reloadComputeConfig" type="button" disabled>重载参数</button>
+              <button id="saveComputeConfig" class="primary" type="button" disabled>保存计算参数</button>
+            </div>
+          </div>
+          <form id="computeConfigForm" class="data-table compute-config-table"></form>
+          <div id="computeConfigHint" class="sheet-meta">计算参数保存到当前方案 Excel 文件的“计算参数”表单。</div>
+        </section>
+        <section id="sheetCurvePanel" class="sheet-curve-panel" hidden>
+          <div class="sheet-curve-head">
+            <div>
+              <span class="section-label">工作表曲线</span>
+              <h2 id="sheetCurveTitle">曲线板</h2>
+            </div>
+            <div id="sheetCurveButtons" class="sheet-curve-buttons" aria-label="曲线选择与显示控制"></div>
+          </div>
+          <svg id="sheetCurveChart" class="sheet-curve-chart" role="img" aria-label="当前工作表曲线"></svg>
+          <div id="sheetCurveTip" class="chart-tip" hidden></div>
+        </section>
+        <div id="sheetPager" class="sheet-pager" hidden>
+          <div class="sheet-pager-actions">
+            <button id="sheetPrevPage" type="button">上一页</button>
+            <button id="sheetNextPage" type="button">下一页</button>
+          </div>
+          <span id="sheetPageInfo" class="sheet-page-info">未加载</span>
+          <label>每页
+            <select id="sheetPageSize">
+              <option value="50">50 行</option>
+              <option value="100">100 行</option>
+              <option value="200" selected>200 行</option>
+              <option value="500">500 行</option>
+              <option value="1000">1000 行</option>
+            </select>
+          </label>
+        </div>
+        <div id="sheetToolbar" class="footer-actions sheet-toolbar">
+          <button id="reloadSheet" type="button">刷新</button>
+          <button id="addSheetRow" type="button">添加行</button>
+          <button id="deleteSheetRow" class="danger" type="button">删除行</button>
+          <button id="saveSheet" class="primary" type="button" disabled data-i18n="schemes.save">保存</button>
+          <span id="saveHint" data-i18n="schemes.saveHint">分页显示完整工作表，保存时仅提交已编辑的单元格。</span>
+        </div>
+        <div id="sheetTable" class="data-table editable-table"></div>
+      </section>
+    </section>
+    <div id="sheetContextMenu" class="context-menu" hidden>
+      <button type="button" data-sheet-action="add-after">添加行</button>
+      <button type="button" data-sheet-action="delete-row" class="danger">删除行</button>
+    </div>
+    <div id="schemeMetaModal" class="modal-backdrop" hidden>
+      <section class="modal-dialog scheme-meta-dialog" role="dialog" aria-modal="true" aria-labelledby="schemeMetaTitle">
+        <form id="schemeMetaForm">
+          <div class="modal-head">
+            <div>
+              <span id="schemeMetaMode" class="section-label">方案</span>
+              <h2 id="schemeMetaTitle">新建方案</h2>
+            </div>
+            <button id="cancelSchemeMetaTop" class="small" type="button" aria-label="关闭">关闭</button>
+          </div>
+          <div id="schemeMetaError" class="status-error" hidden></div>
+          <label class="modal-field">
+            <span>方案名称</span>
+            <input id="schemeMetaName" name="name" required autocomplete="off">
+          </label>
+          <label class="modal-field">
+            <span>方案说明</span>
+            <textarea id="schemeMetaDescription" name="description" rows="4" placeholder="填写方案来源、用途或关键假设"></textarea>
+          </label>
+          <div class="modal-actions">
+            <button id="cancelSchemeMeta" type="button">取消</button>
+            <button id="submitSchemeMeta" class="primary" type="submit">保存</button>
+          </div>
+        </form>
+      </section>
+    </div>
+    <div id="schemeContextMenu" class="context-menu" hidden>
+      <button type="button" data-action="open">查看/打开</button>
+      <button type="button" data-action="create">新建方案</button>
+      <button type="button" data-action="import">导入 Excel</button>
+      <button type="button" data-action="edit">修改名称/说明</button>
+      <button type="button" data-action="copy">复制方案</button>
+      <button type="button" data-action="delete" class="danger">删除方案</button>
+    </div>
+  </main>
+  <script src="assets/common.js"></script>
+  <script src="assets/i18n.js"></script>
+  <script src="assets/auth.js"></script>
+  <script src="assets/schemes.js"></script>
+</body>
+</html>

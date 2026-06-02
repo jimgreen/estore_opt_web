@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+
+*.log
+web_server.out.log
+web_server.err.log
+
+estore_opt_users.sqlite3
+estore_runs/
+estore_verifications/

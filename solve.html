@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>优化求解 - 储能优化调度系统</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+  <main class="app-shell planning-shell">
+    <header class="topbar">
+      <a class="brand" href="index.html" data-i18n="brand">储能优化调度系统</a>
+      <nav class="main-nav" aria-label="主功能导航">
+        <a href="index.html" data-i18n="nav.home">系统首页</a>
+        <a href="schemes.html" data-i18n="nav.schemes">输入配置</a>
+        <a class="active" href="solve.html" data-i18n="nav.solve">优化求解</a>
+        <a href="verify.html" data-i18n="nav.verify">方案校核</a>
+        <a href="comparison.html" data-i18n="nav.comparison">结果对比</a>
+        <a href="batch.html" data-i18n="nav.batch">批量计算</a>
+      </nav>
+      <div class="topbar-tools">
+        <div class="language-switch" data-language-switch></div>
+        <div class="user-status" data-auth-user hidden>
+          <span data-i18n="auth.user">当前用户</span><strong data-auth-username></strong><em data-auth-role></em>
+          <button type="button" data-logout data-i18n="auth.logout">退出</button>
+        </div>
+      </div>
+    </header>
+
+    <section class="workspace optimization-workspace">
+      <aside class="scheme-rail">
+        <div class="scheme-list-title">方案列表</div>
+        <div id="schemeList" class="scheme-list"></div>
+        <div id="optimizationSchemeListResizeHandle" class="scheme-list-resize-handle" role="separator" tabindex="0" aria-label="调整方案列表高度" aria-orientation="horizontal" aria-valuemin="150" aria-valuemax="900" aria-valuenow="0"></div>
+      </aside>
+
+      <section class="optimization-panel">
+        <section class="optimization-command-card">
+          <div id="solveError" class="status-error" hidden></div>
+          <div class="optimization-command-row">
+            <div id="optimizationCurrentScheme" class="optimization-current-scheme">当前: 未选择方案</div>
+            <div class="optimization-actions" aria-label="优化求解操作">
+              <button id="startOptimization" class="primary" type="button">启动</button>
+              <button id="queueOptimization" class="queue-action" type="button">排队</button>
+              <button id="stopOptimization" class="danger" type="button">停止</button>
+            </div>
+            <div class="optimization-status-grid" aria-label="优化求解总体指标">
+              <div class="status-tile"><span>状态</span><strong id="optimizationStatus">待启动</strong></div>
+              <div class="status-tile"><span>开始</span><strong id="optimizationStartTime">-</strong></div>
+              <div class="status-tile"><span>完成</span><strong id="optimizationEndTime">-</strong></div>
+              <div class="status-tile"><span>燃油消耗</span><strong id="optimizationFuel">-</strong></div>
+              <div class="status-tile"><span>Gap</span><strong id="optimizationGap">-</strong></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="optimization-result-card">
+          <div class="result-tabs" role="tablist" aria-label="优化求解结果切换">
+            <button id="optimizationLogViewToggle" class="result-tab" data-result-tab="logs" type="button" aria-selected="false">运行日志</button>
+            <button class="result-tab active" data-result-tab="overview" type="button" aria-selected="true">结果概览</button>
+            <button class="result-tab" data-result-tab="green" type="button" aria-selected="false">经济性指标</button>
+            <button class="result-tab" data-result-tab="safety" type="button" aria-selected="false">安全性指标</button>
+            <button id="optimizationCurveViewToggle" class="result-tab" data-result-tab="curves" type="button" aria-selected="false">曲线展示</button>
+          </div>
+          <div id="overviewResult" class="result-panel active" data-result-panel="overview" role="tabpanel"></div>
+          <div id="greenResult" class="result-panel" data-result-panel="green" role="tabpanel" hidden></div>
+          <div id="safetyResult" class="result-panel" data-result-panel="safety" role="tabpanel" hidden></div>
+          <div id="optimizationLogPanel" class="result-panel optimization-log-result-panel" data-result-panel="logs" role="tabpanel" hidden>
+            <div id="optimizationLogs" class="optimization-logs" aria-live="polite"></div>
+          </div>
+          <div id="optimizationCurvePanel" class="result-panel optimization-curve-panel" data-result-panel="curves" role="tabpanel" hidden>
+            <aside id="optimizationCurveNameList" class="optimization-curve-name-list" aria-label="曲线列表"></aside>
+            <div id="optimizationCurveChart" class="optimization-curve-chart"></div>
+          </div>
+        </section>
+      </section>
+    </section>
+  </main>
+  <script src="assets/common.js"></script>
+  <script src="assets/i18n.js"></script>
+  <script src="assets/auth.js"></script>
+  <script src="assets/solve.js"></script>
+</body>
+</html>

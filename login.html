@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>登录 - 储能优化调度系统</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+  <main class="auth-shell">
+    <section class="auth-hero">
+      <a class="brand" href="login.html" data-i18n="brand">储能优化调度系统</a>
+      <h1 data-i18n="home.title">低温风光柴储电热耦合优化调度</h1>
+      <p data-i18n="auth.loginIntro">登录后进入储能优化调度系统。</p>
+    </section>
+    <section class="auth-card">
+      <header>
+        <h2 data-i18n="auth.loginTitle">登录</h2>
+        <div class="language-switch" data-language-switch></div>
+      </header>
+      <form class="auth-form" data-auth-form="login">
+        <label><span data-i18n="auth.username">用户名</span><input name="username" autocomplete="username" required></label>
+        <label><span data-i18n="auth.password">密码</span><input name="password" type="password" autocomplete="current-password" required></label>
+        <div class="auth-status" data-auth-status hidden></div>
+        <button class="primary" type="submit" data-i18n="auth.loginAction">登录系统</button>
+      </form>
+      <div class="auth-links">
+        <a href="register.html" data-i18n="auth.toRegister">没有账号？注册</a>
+      </div>
+    </section>
+  </main>
+  <script src="assets/common.js"></script>
+  <script src="assets/i18n.js"></script>
+  <script src="assets/login.js"></script>
+</body>
+</html>
