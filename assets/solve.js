@@ -466,13 +466,16 @@ function switchResultTab(tab) {
 }
 
 function metricSummaryCard(title, value, color) {
+  const empty = value === null || value === undefined || value === "";
+  const displayValue = empty ? "-" : value;
+  const emptyClass = empty || displayValue === "-" ? " empty" : "";
   return `
-    <section class="composition-bar-card">
+    <section class="composition-bar-card${emptyClass}">
       <h2>${escapeHtml(title)}</h2>
       <div class="composition-bar-summary">
-        <span><em class="composition-bar-summary-label"><i class="composition-bar-summary-dot" style="background:${color}"></i>${escapeHtml(title)}</em><strong>${escapeHtml(value)}</strong></span>
+        <span><em class="composition-bar-summary-label"><i class="composition-bar-summary-dot" style="background:${color}"></i>${escapeHtml(title)}</em><strong>${escapeHtml(displayValue)}</strong></span>
       </div>
-      <div class="composition-bar-track"><div class="composition-bar-segment" style="width:100%; --composition-segment-color:${color}"><span>${escapeHtml(value)}</span></div></div>
+      <div class="composition-bar-track"><div class="composition-bar-segment" style="width:100%; --composition-segment-color:${color}"><span>${escapeHtml(displayValue)}</span></div></div>
     </section>
   `;
 }
@@ -493,9 +496,10 @@ function renderPlainTable(rows) {
 
 function miniBar(label, rawValue, color) {
   const value = Number(rawValue);
-  const safe = Number.isFinite(value) ? Math.max(8, Math.min(100, Math.abs(value) % 100 || 12)) : 8;
+  const empty = !Number.isFinite(value);
+  const safe = empty ? 8 : Math.max(8, Math.min(100, Math.abs(value) % 100 || 12));
   return `
-    <div class="mini-bar-item">
+    <div class="mini-bar-item${empty ? " empty" : ""}">
       <div class="mini-bar-value">${escapeHtml(fmt(rawValue))}</div>
       <div class="mini-bar-track"><span style="height:${safe}%; background:${color}"></span></div>
       <div class="mini-bar-label">${escapeHtml(label)}</div>
