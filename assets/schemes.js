@@ -26,7 +26,7 @@ const schemeState = {
 };
 
 const sheetCurveColors = ["#27d7b5", "#72a7ff", "#ffbd73", "#c78bff", "#5ee39b", "#ff7b72", "#f4d35e", "#8ee3f5"];
-const sheetsWithoutCurves = new Set(["光伏机组", "舱体", "液冷系统", "电芯", "电池柜", "配电模块", "系统定义", "计算参数"]);
+const sheetsWithoutCurves = new Set(["光伏机组", "舱体", "液冷系统", "电芯电流限值", "电芯", "电池柜", "配电模块", "系统定义", "计算参数"]);
 const WIND_TURBINE_SHEET_NAME = "风电机组";
 const DIESEL_GENERATOR_SHEET_NAME = "柴油发电机";
 const CELL_RESISTANCE_SHEET_NAME = "电芯内阻";
@@ -55,13 +55,7 @@ const computeConfigFields = [
   { key: "cuts", label: "Cuts", type: "select", options: ["", "0", "1", "2"] },
   { key: "heuristics", label: "Heuristics", type: "number", step: "0.01" },
   { key: "hours", label: "时域覆盖(小时)", type: "number", step: "0.25", nullable: true },
-  { key: "warm_start_dt_minutes", label: "热启动步长(分钟)", type: "number", step: "1" },
-  { key: "warm_start_soc_grid_width", label: "热启动SOC网格", type: "number", step: "0.01" },
-  { key: "warm_start_current_segments", label: "热启动电流分段", type: "number", step: "1" },
-  { key: "warm_start_mip_gap", label: "热启动MIP Gap", type: "number", step: "0.001" },
-  { key: "warm_start_time_limit", label: "热启动时间上限(秒)", type: "number", step: "1", nullable: true },
   { key: "tight_temp_bounds", label: "使用紧温度边界", type: "checkbox" },
-  { key: "coarse_warm_start", label: "粗模型热启动", type: "checkbox" },
   { key: "build_only", label: "仅建模检查", type: "checkbox" },
   { key: "no_plots", label: "跳过图形输出", type: "checkbox" },
   { key: "strict_current_sos2", label: "严格电流SOS2", type: "checkbox" },

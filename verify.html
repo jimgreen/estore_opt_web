@@ -37,13 +37,50 @@
         </div>
         <form id="verifyForm" class="inline-form solve-start-form">
           <label><span data-i18n="form.scheme">方案</span><select name="scheme" required></select></label>
-          <span class="sheet-meta">校核沿用“输入配置 > 计算参数”中的求解器、模式和线性化参数。</span>
+          <span class="sheet-meta">校核读取方案目录下独立的 dispatch_schedule.xlsx，以设备控制曲线为输入进行时域仿真。</span>
           <div class="form-actions">
             <button class="primary" type="submit" data-i18n="verify.start">开始</button>
             <button id="queueVerificationTask" type="button">排队</button>
             <button id="stopVerificationTask" class="danger" type="button" disabled>停止</button>
           </div>
         </form>
+      </section>
+
+      <section class="dispatch-panel main-panel">
+        <div class="panel-head">
+          <div>
+            <span class="section-label">独立方案文件</span>
+            <h2>调度控制曲线</h2>
+          </div>
+          <div class="summary-actions">
+            <button id="reloadDispatchSchedule" class="small" type="button">重载</button>
+            <button id="initDispatchSchedule" class="small" type="button">生成空白调度文件</button>
+            <button id="saveDispatchSchedule" class="primary small" type="button">保存调度文件</button>
+          </div>
+        </div>
+        <div class="dispatch-toolbar">
+          <div class="dispatch-status">
+            <strong id="dispatchFileState">未加载</strong>
+            <span id="dispatchFileMeta">请选择方案。</span>
+          </div>
+          <label>
+            <span>优化结果</span>
+            <select id="optimizationTaskSelect"></select>
+          </label>
+          <label>
+            <span>新方案名称</span>
+            <input id="dispatchSchemeName" type="text" placeholder="例如：方案A_校核调度">
+          </label>
+          <label>
+            <span>方案说明</span>
+            <input id="dispatchSchemeDescription" type="text" placeholder="可选">
+          </label>
+          <div class="dispatch-actions">
+            <button id="createDispatchScheme" type="button">从优化结果生成新方案</button>
+            <button id="saveDispatchAsScheme" type="button">另存当前调度为新方案</button>
+          </div>
+        </div>
+        <div id="dispatchScheduleTable" class="data-table dispatch-table"></div>
       </section>
 
       <section class="result-layout">

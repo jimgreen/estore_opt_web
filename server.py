@@ -37,6 +37,7 @@ import numpy as np
 
 try:
     from openpyxl import load_workbook
+    from openpyxl.styles import Font
     from openpyxl.workbook import Workbook
 except Exception as exc:  # pragma: no cover
     raise SystemExit(f"openpyxl is required to run estore_opt_web: {exc}") from exc
@@ -56,7 +57,16 @@ SESSION_MAX_AGE_SECONDS = int(os.environ.get("ESTORE_OPT_SESSION_MAX_AGE", "6048
 LOCAL_AUTH_BYPASS_ENABLED = os.environ.get("ESTORE_OPT_LOCAL_AUTH_BYPASS", "").lower() in {"1", "true", "yes"}
 PARAM_FILE_NAME = "params.xlsx"
 COMPUTE_CONFIG_FILE_NAME = "compute_config.json"
+RESULT_DATA_FILE_NAME = "optimization_result_data.json"
+RESULT_STATISTICS_FILE_NAME = "optimization_statistics.json"
+RESULT_TIMESERIES_CSV_FILE_NAME = "optimization_timeseries.csv"
+DISPATCH_SCHEDULE_FILE_NAME = "dispatch_schedule.xlsx"
 COMPUTE_CONFIG_SHEET_NAME = "计算参数"
+DISPATCH_SCHEDULE_SHEET_NAME = "调度控制曲线"
+CELL_SHEET_NAME = "电芯"
+CELL_RESISTANCE_SHEET_NAME = "电芯内阻"
+CELL_CURRENT_LIMIT_SHEET_NAME = "电芯电流限值"
+CELL_CURRENT_LIMIT_HEADERS = ["温度(℃)", "最大充电电流(A)", "最大放电电流(A)"]
 META_FILE_NAME = "scheme.json"
 OVERVIEW_HEADER_COLS = 32
 IS_WORKER_IMPORT = os.environ.get("ESTORE_OPT_WORKER", "").lower() in {"1", "true", "yes"}
@@ -78,14 +88,8 @@ DEFAULT_COMPUTE_CONFIG: dict[str, Any] = {
     "hours": None,
     "strict_current_sos2": False,
     "tight_temp_bounds": True,
-    "coarse_warm_start": True,
     "build_only": False,
     "no_plots": True,
-    "warm_start_dt_minutes": 60,
-    "warm_start_soc_grid_width": 0.25,
-    "warm_start_current_segments": 5,
-    "warm_start_mip_gap": 0.05,
-    "warm_start_time_limit": None,
 }
 
 COMPUTE_CONFIG_LABELS: dict[str, str] = {
@@ -105,14 +109,8 @@ COMPUTE_CONFIG_LABELS: dict[str, str] = {
     "hours": "时域覆盖(小时)",
     "strict_current_sos2": "严格电流SOS2",
     "tight_temp_bounds": "使用紧温度边界",
-    "coarse_warm_start": "粗模型热启动",
     "build_only": "仅建模检查",
     "no_plots": "跳过图形输出",
-    "warm_start_dt_minutes": "热启动步长(分钟)",
-    "warm_start_soc_grid_width": "热启动SOC网格",
-    "warm_start_current_segments": "热启动电流分段",
-    "warm_start_mip_gap": "热启动MIP Gap",
-    "warm_start_time_limit": "热启动时间上限(秒)",
 }
 
 
@@ -338,12 +336,16 @@ def scheme_compute_config_path(name: str) -> Path:
     return scheme_dir(name) / COMPUTE_CONFIG_FILE_NAME
 
 
+def scheme_dispatch_schedule_path(name: str) -> Path:
+    return scheme_dir(name) / DISPATCH_SCHEDULE_FILE_NAME
+
+
 def normalize_compute_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
     cfg = dict(DEFAULT_COMPUTE_CONFIG)
     for key, value in (config or {}).items():
         if key in cfg:
             cfg[key] = value
-    int_keys = {"current_segments", "threads", "mip_focus", "cuts", "warm_start_current_segments"}
+    int_keys = {"current_segments", "threads", "mip_focus", "cuts"}
     float_keys = {
         "dt_minutes",
         "time_limit",
@@ -351,12 +353,8 @@ def normalize_compute_config(config: dict[str, Any] | None = None) -> dict[str, 
         "soc_grid_width",
         "heuristics",
         "hours",
-        "warm_start_dt_minutes",
-        "warm_start_soc_grid_width",
-        "warm_start_mip_gap",
-        "warm_start_time_limit",
     }
-    bool_keys = {"strict_current_sos2", "tight_temp_bounds", "coarse_warm_start", "build_only", "no_plots"}
+    bool_keys = {"strict_current_sos2", "tight_temp_bounds", "build_only", "no_plots"}
     for key in int_keys:
         if cfg.get(key) in ("", None):
             cfg[key] = None
@@ -408,6 +406,57 @@ def parse_compute_sheet_value(value: Any) -> Any:
         except ValueError:
             return text
     return value
+
+
+def excel_number(value: Any, default: float | None = None) -> float:
+    if value is None or value == "":
+        if default is None:
+            raise ValueError("Excel 数值不能为空")
+        return float(default)
+    if isinstance(value, str):
+        text = value.strip().replace("A", "").replace("a", "")
+        return float(text)
+    return float(value)
+
+
+def temperature_from_header(value: Any) -> float:
+    text = str(value).replace("℃", "").replace("°C", "").replace("C", "").strip()
+    return float(text)
+
+
+def ensure_cell_current_limit_sheet(path: Path) -> bool:
+    if not path.exists():
+        return False
+    wb = load_workbook(path)
+    try:
+        if CELL_CURRENT_LIMIT_SHEET_NAME in wb.sheetnames:
+            return False
+        if CELL_SHEET_NAME not in wb.sheetnames or CELL_RESISTANCE_SHEET_NAME not in wb.sheetnames:
+            return False
+        cell_ws = wb[CELL_SHEET_NAME]
+        r0_ws = wb[CELL_RESISTANCE_SHEET_NAME]
+        temperatures: list[float] = []
+        for col in range(2, r0_ws.max_column + 1):
+            value = r0_ws.cell(1, col).value
+            if value is not None:
+                temperatures.append(temperature_from_header(value))
+        if not temperatures:
+            return False
+        discharge_max = excel_number(cell_ws.cell(2, 7).value)
+        charge_max = excel_number(cell_ws.cell(2, 8).value)
+        insert_at = wb.sheetnames.index(CELL_SHEET_NAME) + 1
+        ws = wb.create_sheet(CELL_CURRENT_LIMIT_SHEET_NAME, insert_at)
+        ws.append(CELL_CURRENT_LIMIT_HEADERS)
+        for temp in temperatures:
+            ws.append([temp, charge_max, discharge_max])
+        ws.freeze_panes = "A2"
+        ws.column_dimensions["A"].width = 14
+        ws.column_dimensions["B"].width = 20
+        ws.column_dimensions["C"].width = 20
+        wb.save(path)
+        return True
+    finally:
+        wb.close()
 
 
 def compute_config_from_workbook(name: str) -> dict[str, Any] | None:
@@ -495,8 +544,10 @@ def create_scheme(name: str, description: str = "", source: Path | None = None) 
         wb = Workbook()
         wb.active.title = "系统定义"
         wb.save(target / PARAM_FILE_NAME)
+        wb.close()
     else:
         shutil.copy2(source_path, target / PARAM_FILE_NAME)
+    ensure_cell_current_limit_sheet(target / PARAM_FILE_NAME)
     write_scheme_compute_config(clean, normalize_compute_config())
     meta = {
         "name": clean,
@@ -515,6 +566,9 @@ def copy_scheme(source_name: str, target_name: str, description: str = "") -> di
         raise FileNotFoundError(f"源方案不存在：{source_name}")
     scheme = create_scheme(target_name, description, source)
     write_scheme_compute_config(scheme["name"], read_scheme_compute_config(source_name))
+    source_dispatch = scheme_dispatch_schedule_path(source_name)
+    if source_dispatch.exists():
+        shutil.copy2(source_dispatch, scheme_dispatch_schedule_path(scheme["name"]))
     return scheme
 
 
@@ -544,7 +598,10 @@ def scheme_summary(name: str) -> dict[str, Any]:
     path = scheme_dir(name)
     meta = read_json(path / META_FILE_NAME, {}) or {}
     params = path / PARAM_FILE_NAME
+    dispatch = path / DISPATCH_SCHEDULE_FILE_NAME
+    ensure_cell_current_limit_sheet(params)
     stat = params.stat() if params.exists() else None
+    dispatch_stat = dispatch.stat() if dispatch.exists() else None
     config = ensure_scheme_compute_config(path.name)
     return {
         "name": meta.get("name") or path.name,
@@ -557,6 +614,9 @@ def scheme_summary(name: str) -> dict[str, Any]:
         "file_mtime": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S") if stat else "",
         "compute_config_file": str(path / COMPUTE_CONFIG_FILE_NAME),
         "compute_config": config,
+        "dispatch_schedule_file": str(dispatch),
+        "dispatch_schedule_exists": bool(dispatch_stat),
+        "dispatch_schedule_mtime": datetime.fromtimestamp(dispatch_stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S") if dispatch_stat else "",
     }
 
 
@@ -568,6 +628,7 @@ def list_schemes() -> list[dict[str, Any]]:
 
 def workbook_overview(name: str) -> dict[str, Any]:
     path = scheme_params_path(name)
+    ensure_cell_current_limit_sheet(path)
     ensure_scheme_compute_config(name)
     wb = load_workbook(path, read_only=True, data_only=False)
     sheets = []
@@ -588,6 +649,7 @@ def workbook_overview(name: str) -> dict[str, Any]:
 
 def read_sheet(name: str, sheet_name: str, page: int = 1, page_size: int = 200) -> dict[str, Any]:
     path = scheme_params_path(name)
+    ensure_cell_current_limit_sheet(path)
     wb = load_workbook(path, read_only=True, data_only=False)
     if sheet_name not in wb.sheetnames:
         wb.close()
@@ -647,6 +709,7 @@ def write_sheet(name: str, sheet_name: str, rows: list[list[Any]], page: int = 1
     if not rows:
         raise ValueError("保存内容不能为空")
     path = scheme_params_path(name)
+    ensure_cell_current_limit_sheet(path)
     wb = load_workbook(path)
     if sheet_name not in wb.sheetnames:
         wb.close()
@@ -668,6 +731,7 @@ def write_sheet_cells(name: str, sheet_name: str, updates: list[dict[str, Any]],
     if not updates:
         return read_sheet(name, sheet_name, page, page_size)
     path = scheme_params_path(name)
+    ensure_cell_current_limit_sheet(path)
     wb = load_workbook(path)
     if sheet_name not in wb.sheetnames:
         wb.close()
@@ -697,6 +761,7 @@ def mutate_sheet_rows(
     page_size: int = 200,
 ) -> dict[str, Any]:
     path = scheme_params_path(name)
+    ensure_cell_current_limit_sheet(path)
     wb = load_workbook(path)
     if sheet_name not in wb.sheetnames:
         wb.close()
@@ -727,6 +792,258 @@ def mutate_sheet_rows(
     return read_sheet(name, sheet_name, page, page_size)
 
 
+DISPATCH_HEADERS: list[tuple[str, str]] = [
+    ("hour", "时刻(h)"),
+    ("cell_current_a", "电芯电流(A)"),
+    ("pack_current_a", "电池包电流(A)"),
+    ("u_pi", "内循环泵启停"),
+    ("u_po", "外循环泵启停"),
+    ("u_lh", "液冷电加热启停"),
+    ("p_heat_liquid_kw", "液冷电加热功率(kW)"),
+    ("u_ch", "舱体电加热启停"),
+    ("p_heat_cont_kw", "舱体电加热功率(kW)"),
+    ("soc_ref", "SOC参考值"),
+    ("t_bat_ref_c", "电芯温度参考值(℃)"),
+    ("t_tank_ref_c", "液冷罐温度参考值(℃)"),
+    ("t_cont_ref_c", "舱体温度参考值(℃)"),
+    ("pbess_ref_kw", "BESS功率参考值(kW)"),
+    ("pv_use_ref_kw", "光伏利用参考值(kW)"),
+    ("wt_use_ref_kw", "风电利用参考值(kW)"),
+    ("dg_ref_kw", "柴油机功率参考值(kW)"),
+]
+
+DISPATCH_HEADER_ALIASES: dict[str, str] = {
+    "时刻(h)": "hour",
+    "hour": "hour",
+    "电芯电流(A)": "cell_current_a",
+    "cell_current_a": "cell_current_a",
+    "电池包电流(A)": "pack_current_a",
+    "pack_current_a": "pack_current_a",
+    "内循环泵启停": "u_pi",
+    "u_pi": "u_pi",
+    "外循环泵启停": "u_po",
+    "u_po": "u_po",
+    "液冷电加热启停": "u_lh",
+    "u_lh": "u_lh",
+    "液冷电加热功率(kW)": "p_heat_liquid_kw",
+    "p_heat_liquid_kw": "p_heat_liquid_kw",
+    "舱体电加热启停": "u_ch",
+    "u_ch": "u_ch",
+    "舱体电加热功率(kW)": "p_heat_cont_kw",
+    "p_heat_cont_kw": "p_heat_cont_kw",
+    "SOC参考值": "soc_ref",
+    "soc_ref": "soc_ref",
+    "电芯温度参考值(℃)": "t_bat_ref_c",
+    "t_bat_ref_c": "t_bat_ref_c",
+    "液冷罐温度参考值(℃)": "t_tank_ref_c",
+    "t_tank_ref_c": "t_tank_ref_c",
+    "舱体温度参考值(℃)": "t_cont_ref_c",
+    "t_cont_ref_c": "t_cont_ref_c",
+    "BESS功率参考值(kW)": "pbess_ref_kw",
+    "pbess_ref_kw": "pbess_ref_kw",
+    "光伏利用参考值(kW)": "pv_use_ref_kw",
+    "pv_use_ref_kw": "pv_use_ref_kw",
+    "风电利用参考值(kW)": "wt_use_ref_kw",
+    "wt_use_ref_kw": "wt_use_ref_kw",
+    "柴油机功率参考值(kW)": "dg_ref_kw",
+    "dg_ref_kw": "dg_ref_kw",
+}
+
+
+def dispatch_default_heat_kw(enabled: Any, requested_kw: Any, nominal_w: float) -> float:
+    value = float(requested_kw or 0.0)
+    if value > 0:
+        return value
+    return float(enabled or 0.0) * float(nominal_w or 0.0) / 1000.0
+
+
+def write_dispatch_schedule_workbook(path: Path, rows: list[dict[str, Any]], p: Any | None = None) -> Path:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = DISPATCH_SCHEDULE_SHEET_NAME
+    headers = [label for _, label in DISPATCH_HEADERS]
+    ws.append(headers)
+    n_p = max(1, int(getattr(p, "N_p", 1))) if p is not None else 1
+    for row in rows:
+        normalized = dict(row)
+        if normalized.get("pack_current_a") in (None, "") and normalized.get("cell_current_a") not in (None, ""):
+            normalized["pack_current_a"] = float(normalized["cell_current_a"]) * n_p
+        if normalized.get("cell_current_a") in (None, "") and normalized.get("pack_current_a") not in (None, ""):
+            normalized["cell_current_a"] = float(normalized["pack_current_a"]) / n_p
+        ws.append([normalized.get(key) for key, _ in DISPATCH_HEADERS])
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(path)
+    wb.close()
+    return path
+
+
+def read_dispatch_schedule_workbook(path: Path, p: Any | None = None) -> dict[str, Any]:
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"调度控制曲线文件不存在：{path.name}")
+    wb = load_workbook(path, read_only=True, data_only=True)
+    if DISPATCH_SCHEDULE_SHEET_NAME not in wb.sheetnames:
+        wb.close()
+        raise FileNotFoundError(f"调度控制曲线文件缺少工作表：{DISPATCH_SCHEDULE_SHEET_NAME}")
+    ws = wb[DISPATCH_SCHEDULE_SHEET_NAME]
+    raw_headers = [cell_to_json(cell.value) for cell in next(ws.iter_rows(min_row=1, max_row=1), [])]
+    keys = [DISPATCH_HEADER_ALIASES.get(str(header or "").strip(), "") for header in raw_headers]
+    rows: list[dict[str, Any]] = []
+    n_p = max(1, int(getattr(p, "N_p", 1))) if p is not None else 1
+    for excel_row in ws.iter_rows(min_row=2, max_col=len(raw_headers)):
+        row: dict[str, Any] = {}
+        for key, cell in zip(keys, excel_row):
+            if key:
+                row[key] = cell_to_json(cell.value)
+        if not any(value not in (None, "") for value in row.values()):
+            continue
+        if row.get("hour") in (None, ""):
+            row["hour"] = len(rows)
+        if row.get("pack_current_a") in (None, "") and row.get("cell_current_a") not in (None, ""):
+            row["pack_current_a"] = float(row["cell_current_a"]) * n_p
+        if row.get("cell_current_a") in (None, "") and row.get("pack_current_a") not in (None, ""):
+            row["cell_current_a"] = float(row["pack_current_a"]) / n_p
+        row["pack_current_a"] = float(row.get("pack_current_a") or 0.0)
+        row["cell_current_a"] = float(row.get("cell_current_a") or 0.0)
+        for key in ("u_pi", "u_po", "u_lh", "u_ch"):
+            row[key] = float(row.get(key) or 0.0)
+        row["p_heat_liquid_kw"] = dispatch_default_heat_kw(row.get("u_lh"), row.get("p_heat_liquid_kw"), getattr(p, "P_heat_liquid", 0.0))
+        row["p_heat_cont_kw"] = dispatch_default_heat_kw(row.get("u_ch"), row.get("p_heat_cont_kw"), getattr(p, "P_heat_cont", 0.0))
+        rows.append(row)
+    wb.close()
+    return {"path": str(path), "sheet": DISPATCH_SCHEDULE_SHEET_NAME, "rows": rows, "headers": raw_headers}
+
+
+def dispatch_rows_from_result_data(result_data: dict[str, Any], p: Any | None = None) -> list[dict[str, Any]]:
+    source_rows = list(result_data.get("rows") or [])
+    n_p = max(1, int(getattr(p, "N_p", 1))) if p is not None else 1
+    rows: list[dict[str, Any]] = []
+    for raw in source_rows:
+        i_pack = raw.get("I_bat", raw.get("pack_current_a", 0.0)) or 0.0
+        p_heat_liquid_w = raw.get("P_heat_liquid_w")
+        p_heat_cont_w = raw.get("P_heat_cont_w")
+        rows.append(
+            {
+                "hour": raw.get("hour", raw.get("时刻(h)", len(rows))),
+                "cell_current_a": float(i_pack) / n_p,
+                "pack_current_a": float(i_pack),
+                "u_pi": float(raw.get("u_pi", 0.0) or 0.0),
+                "u_po": float(raw.get("u_po", 0.0) or 0.0),
+                "u_lh": float(raw.get("u_lh", 0.0) or 0.0),
+                "p_heat_liquid_kw": float(p_heat_liquid_w or 0.0) / 1000.0,
+                "u_ch": float(raw.get("u_ch", 0.0) or 0.0),
+                "p_heat_cont_kw": float(p_heat_cont_w or 0.0) / 1000.0,
+                "soc_ref": raw.get("SOC"),
+                "t_bat_ref_c": raw.get("T_bat"),
+                "t_tank_ref_c": raw.get("T_tank"),
+                "t_cont_ref_c": raw.get("T_cont"),
+                "pbess_ref_kw": float(raw.get("P_BESS") or 0.0) / 1000.0,
+                "pv_use_ref_kw": raw.get("pv_use_kw"),
+                "wt_use_ref_kw": raw.get("wt_use_kw"),
+                "dg_ref_kw": float(raw.get("P_dg") or 0.0) / 1000.0,
+            }
+        )
+    return rows
+
+
+def dispatch_schedule_payload(name: str) -> dict[str, Any]:
+    p = load_solver_module().load_params(scheme_params_path(name))
+    path = scheme_dispatch_schedule_path(name)
+    exists = path.exists()
+    if exists:
+        schedule = read_dispatch_schedule_workbook(path, p)
+        rows = schedule["rows"]
+    else:
+        rows = []
+    return {
+        "scheme": name,
+        "exists": exists,
+        "path": str(path),
+        "sheet": DISPATCH_SCHEDULE_SHEET_NAME,
+        "headers": [{"key": key, "label": label} for key, label in DISPATCH_HEADERS],
+        "rows": make_dispatch_rows_json(rows),
+        "row_count": len(rows),
+    }
+
+
+def make_dispatch_rows_json(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [{key: row.get(key) for key, _ in DISPATCH_HEADERS} for row in rows]
+
+
+def write_scheme_dispatch_schedule(name: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    p = load_solver_module().load_params(scheme_params_path(name))
+    write_dispatch_schedule_workbook(scheme_dispatch_schedule_path(name), rows, p)
+    touch_scheme_meta(name)
+    return dispatch_schedule_payload(name)
+
+
+def default_dispatch_schedule_rows(name: str, config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    solver = load_solver_module()
+    p = solver.load_params(scheme_params_path(name))
+    cfg = normalize_compute_config(config or read_scheme_compute_config(name))
+    dt_minutes = float(cfg.get("dt_minutes") or 60.0)
+    mode = str(cfg.get("mode") or "dayahead_24h")
+    hours = cfg.get("hours")
+    if hours not in (None, ""):
+        horizon = float(hours)
+    elif mode == "test_1h":
+        horizon = 1.0
+    elif mode == "test_4h":
+        horizon = 4.0
+    else:
+        horizon = 24.0
+    n = int(round(horizon / (dt_minutes / 60.0)))
+    return [
+        {
+            "hour": index * dt_minutes / 60.0,
+            "cell_current_a": 0.0,
+            "pack_current_a": 0.0,
+            "u_pi": 0.0,
+            "u_po": 0.0,
+            "u_lh": 0.0,
+            "p_heat_liquid_kw": 0.0,
+            "u_ch": 0.0,
+            "p_heat_cont_kw": 0.0,
+            "soc_ref": getattr(p, "SOC_init", None),
+            "t_bat_ref_c": getattr(p, "T_bat_init", None),
+            "t_tank_ref_c": getattr(p, "T_tank_init", None),
+            "t_cont_ref_c": getattr(p, "T_cont_init", None),
+            "pbess_ref_kw": 0.0,
+            "pv_use_ref_kw": None,
+            "wt_use_ref_kw": None,
+            "dg_ref_kw": None,
+        }
+        for index in range(n)
+    ]
+
+
+def initialize_scheme_dispatch_schedule(name: str, config: dict[str, Any] | None = None) -> dict[str, Any]:
+    rows = default_dispatch_schedule_rows(name, config)
+    return write_scheme_dispatch_schedule(name, rows)
+
+
+def create_dispatch_scheme_from_optimization(task_id: str, target_name: str, description: str = "") -> dict[str, Any]:
+    run_dir = RUN_ROOT / safe_name(task_id)
+    if not run_dir.exists():
+        run_dir = RUN_ROOT / str(task_id)
+    result_data_path = run_dir / RESULT_DATA_FILE_NAME
+    if not result_data_path.exists():
+        raise FileNotFoundError("优化任务没有完整结果JSON，无法生成调度控制文件")
+    manifest = read_json(run_dir / "run_manifest.json", {}) or {}
+    source_scheme = str(manifest.get("scheme") or "")
+    if not source_scheme:
+        raise ValueError("优化任务缺少来源方案信息")
+    scheme = copy_scheme(source_scheme, target_name, description or f"由优化任务 {task_id} 生成的调度方案")
+    p = load_solver_module().load_params(scheme_params_path(scheme["name"]))
+    rows = dispatch_rows_from_result_data(read_json(result_data_path, {}) or {}, p)
+    write_dispatch_schedule_workbook(scheme_dispatch_schedule_path(scheme["name"]), rows, p)
+    touch_scheme_meta(scheme["name"])
+    return scheme_summary(scheme["name"])
+
+
 def key_metrics(diag: dict[str, Any], stats: dict[str, Any]) -> dict[str, Any]:
     checks = diag.get("checks") or {}
     return {
@@ -750,12 +1067,99 @@ def key_metrics(diag: dict[str, Any], stats: dict[str, Any]) -> dict[str, Any]:
         "soc_max": checks.get("soc_max"),
         "tbat_min_c": checks.get("tbat_min_c"),
         "tbat_max_c": checks.get("tbat_max_c"),
+        "charge_current_limit_violation_max_a": checks.get("charge_current_limit_violation_max_a"),
+        "discharge_current_limit_violation_max_a": checks.get("discharge_current_limit_violation_max_a"),
         "ttank_min_c": checks.get("ttank_min_c"),
         "ttank_max_c": checks.get("ttank_max_c"),
         "tcont_min_c": checks.get("tcont_min_c"),
         "tcont_max_c": checks.get("tcont_max_c"),
         "model_balance_max_kw": checks.get("model_balance_max_kw"),
         "pbess_physical_max_kw": checks.get("pbess_physical_max_kw"),
+    }
+
+
+def web_href_for_path(path: Path) -> str:
+    try:
+        relative = path.resolve().relative_to(WEB_ROOT.resolve())
+    except Exception:
+        return ""
+    return "/" + relative.as_posix()
+
+
+def file_entry(path: Path, label: str, kind: str) -> dict[str, Any] | None:
+    if not path.exists() or not path.is_file():
+        return None
+    return {
+        "label": label,
+        "kind": kind,
+        "name": path.name,
+        "path": str(path),
+        "href": web_href_for_path(path),
+        "size_bytes": path.stat().st_size,
+        "modified_at": datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+def first_existing_path(*paths: Any) -> Path | None:
+    for value in paths:
+        if not value:
+            continue
+        path = Path(value)
+        if path.exists():
+            return path
+    return None
+
+
+def newest_matching_file(run_dir: Path, pattern: str) -> Path | None:
+    matches = sorted(run_dir.glob(pattern), key=lambda item: item.stat().st_mtime, reverse=True)
+    return matches[0] if matches else None
+
+
+def fallback_statistics(diag: dict[str, Any], stats: dict[str, Any]) -> dict[str, Any]:
+    metrics = key_metrics(diag, stats)
+    return {
+        **metrics,
+        "checks": diag.get("checks") or {},
+        "model_stats": stats or diag.get("model_stats") or {},
+        "objective_breakdown": diag.get("objective_breakdown") or {},
+    }
+
+
+def optimization_result_payload(run_dir: Path | str, diag: dict[str, Any] | None = None, stats: dict[str, Any] | None = None) -> dict[str, Any]:
+    run_path = Path(run_dir) if run_dir else Path()
+    diag = diag or {}
+    stats = stats or {}
+    if not run_path.exists():
+        return {"result_data": {}, "statistics": fallback_statistics(diag, stats), "result_files": []}
+
+    result_data_path = first_existing_path(diag.get("result_data"), run_path / RESULT_DATA_FILE_NAME)
+    statistics_path = first_existing_path(diag.get("result_statistics"), run_path / RESULT_STATISTICS_FILE_NAME)
+    csv_path = first_existing_path(diag.get("result_timeseries_csv"), run_path / RESULT_TIMESERIES_CSV_FILE_NAME)
+    workbook_path = first_existing_path(diag.get("state_workbook"), newest_matching_file(run_path, "optimization_results_*.xlsx"))
+    summary_path = newest_matching_file(run_path, "bess_summary_*.md")
+
+    result_data = read_json(result_data_path, {}) if result_data_path else {}
+    statistics = read_json(statistics_path, {}) if statistics_path else {}
+    if not statistics and isinstance(result_data, dict):
+        statistics = result_data.get("statistics") or {}
+    if not statistics:
+        statistics = fallback_statistics(diag, stats)
+
+    files: list[dict[str, Any]] = []
+    for entry in (
+        file_entry(result_data_path, "完整结果JSON", "json") if result_data_path else None,
+        file_entry(statistics_path, "统计信息JSON", "json") if statistics_path else None,
+        file_entry(csv_path, "时序曲线CSV", "csv") if csv_path else None,
+        file_entry(workbook_path, "明细工作簿", "xlsx") if workbook_path else None,
+        file_entry(summary_path, "摘要报告", "markdown") if summary_path else None,
+    ):
+        if entry:
+            files.append(entry)
+
+    return {
+        "result_data": result_data if isinstance(result_data, dict) else {},
+        "statistics": statistics if isinstance(statistics, dict) else {},
+        "result_files": files,
     }
 
 
@@ -780,6 +1184,9 @@ class OptTask:
     diagnostics: dict[str, Any] = field(default_factory=dict)
     model_stats: dict[str, Any] = field(default_factory=dict)
     progress: dict[str, Any] = field(default_factory=dict)
+    result_data: dict[str, Any] = field(default_factory=dict)
+    result_statistics: dict[str, Any] = field(default_factory=dict)
+    result_files: list[dict[str, Any]] = field(default_factory=list)
     summary_text: str = ""
     cancel_requested: bool = False
 
@@ -929,12 +1336,16 @@ class TaskManager:
             stats = read_json(model_stats_json, {}) or {}
             progress = read_json(progress_json, {}) or {}
             summary = self._read_summary(run_dir)
+            result_payload = optimization_result_payload(run_dir, diag, stats)
             with self.lock:
                 task.return_code = return_code
                 task.diagnostics = diag
                 task.model_stats = stats
                 task.progress = progress
                 task.metrics = key_metrics(diag, stats)
+                task.result_data = result_payload.get("result_data") or {}
+                task.result_statistics = result_payload.get("statistics") or {}
+                task.result_files = result_payload.get("result_files") or []
                 task.summary_text = summary
                 if task.cancel_requested:
                     task.status = "计算中止"
@@ -1016,6 +1427,9 @@ class TaskManager:
         return entries
 
     def _task_payload(self, task: OptTask, detail: bool = False) -> dict[str, Any]:
+        result_payload = None
+        if detail and task.run_dir:
+            result_payload = optimization_result_payload(Path(task.run_dir), task.diagnostics, task.model_stats)
         payload = {
             "id": task.id,
             "scheme": task.scheme,
@@ -1042,6 +1456,9 @@ class TaskManager:
                     "diagnostics": task.diagnostics,
                     "model_stats": task.model_stats,
                     "progress": task.progress,
+                    "result_data": (result_payload or {}).get("result_data") or task.result_data,
+                    "statistics": (result_payload or {}).get("statistics") or task.result_statistics,
+                    "result_files": (result_payload or {}).get("result_files") or task.result_files,
                     "logs": self._read_stdout_logs(task),
                     "summary_text": task.summary_text,
                 }
@@ -1070,6 +1487,7 @@ class VerificationTask:
     config: dict[str, Any] = field(default_factory=dict)
     output_dir: str = ""
     metrics: dict[str, Any] = field(default_factory=dict)
+    rows: list[dict[str, Any]] = field(default_factory=list)
     rows_preview: list[dict[str, Any]] = field(default_factory=list)
     summary_text: str = ""
     cancel_requested: bool = False
@@ -1223,7 +1641,8 @@ class VerificationManager:
                 payload = result.get("payload") or {}
                 task.status = "完成校核"
                 task.metrics = payload.get("metrics") or {}
-                task.rows_preview = (payload.get("rows") or [])[:80]
+                task.rows = payload.get("rows") or []
+                task.rows_preview = task.rows[:80]
                 task.summary_text = payload.get("summary_text") or ""
                 task.latest_log = timestamp_log_line("方案校核完成")
                 task.message = task.summary_text.splitlines()[0] if task.summary_text else "方案校核完成"
@@ -1254,7 +1673,7 @@ class VerificationManager:
             "can_cancel": task.status in {"排队中", "准备启动", "校核中"},
         }
         if detail:
-            payload.update({"rows_preview": task.rows_preview, "summary_text": task.summary_text})
+            payload.update({"rows": task.rows, "rows_preview": task.rows_preview, "summary_text": task.summary_text})
         return payload
 
 
@@ -1268,7 +1687,7 @@ def load_solver_module():
     return module
 
 
-def run_scheme_verification(params_path: Path, config: dict[str, Any], output_dir: Path) -> dict[str, Any]:
+def run_scheme_verification(params_path: Path, config: dict[str, Any], output_dir: Path, dispatch_path: Path | None = None) -> dict[str, Any]:
     solver = load_solver_module()
     p = solver.load_params(params_path)
     experiment = str(config.get("experiment") or "perspective_i2r_block20")
@@ -1289,17 +1708,7 @@ def run_scheme_verification(params_path: Path, config: dict[str, Any], output_di
     p.diag_log_file = None
     p.diag_model_stats_json = None
 
-    current_segments = int(config.get("current_segments") or 5)
-    soc_grid_width = float(config.get("soc_grid_width") or 0.2)
     dt_minutes = float(config.get("dt_minutes") or 60)
-    bp = solver.make_breakpoints(
-        p,
-        mode,
-        None,
-        dt_minutes=dt_minutes,
-        current_segments=current_segments,
-        soc_grid_width=soc_grid_width,
-    )
     hours = config.get("hours")
     if hours not in (None, ""):
         horizon = float(hours)
@@ -1309,37 +1718,240 @@ def run_scheme_verification(params_path: Path, config: dict[str, Any], output_di
         horizon = 4.0
     else:
         horizon = 24.0
-    data = solver.interpolate_profiles(p, bp.dt_hours, horizon)
-    solver_name, solver_backend = solver.resolve_solver_backend(str(config.get("solver") or "auto"))
-    result = solver.solve_with_backend(
-        solver_backend,
-        p,
-        data,
-        bp,
-        float(config.get("time_limit") or 300),
-        float(config.get("mip_gap") or 0.05),
-        build_only=False,
-        warm_start_solution=None,
-    )
-    if not result.get("success"):
-        raise RuntimeError(f"优化求解未成功，无法校核：{result.get('status')} {result.get('message', '')}")
-    verification = detailed_replay_verification(solver, p, result)
+    dt_hours = dt_minutes / 60.0
+    data = solver.interpolate_profiles(p, dt_hours, horizon)
+    if dispatch_path is None:
+        try:
+            scheme_name = Path(params_path).resolve().parent.name
+            dispatch_path = scheme_dispatch_schedule_path(scheme_name)
+        except Exception:
+            dispatch_path = Path(params_path).with_name(DISPATCH_SCHEDULE_FILE_NAME)
+    schedule = read_dispatch_schedule_workbook(dispatch_path, p)
+    verification = run_dispatch_time_domain_verification(solver, p, data, schedule["rows"])
     verification["config"] = {
         "mode": mode,
         "experiment": experiment,
-        "solver_requested": config.get("solver") or "auto",
-        "solver_resolved": solver_name,
-        "solver_backend": solver_backend,
         "dt_minutes": float(data["dt"]) / 60.0,
         "horizon_hours": horizon,
-        "current_segments": current_segments,
-        "soc_grid_width": soc_grid_width,
+        "dispatch_schedule": str(dispatch_path),
+        "calculation": "time_domain_simulation",
     }
     write_json(output_dir / "verification.json", json_safe(verification))
     write_verification_csv(output_dir / "verification_timeseries.csv", verification["rows"])
     summary_text = verification_summary_text(verification)
     (output_dir / "verification_summary.md").write_text(summary_text, encoding="utf-8")
     return {"metrics": verification["metrics"], "rows": verification["rows"], "summary_text": summary_text}
+
+
+def _interp_profile(data: dict[str, Any], key: str, index: int, default: float = 0.0) -> float:
+    values = np.asarray(data.get(key, []), dtype=float).reshape(-1)
+    if values.size == 0:
+        return float(default)
+    return float(values[min(index, values.size - 1)])
+
+
+def _reference_error(row: dict[str, Any], actual_key: str, ref_key: str, out_key: str) -> None:
+    ref = row.get(ref_key)
+    if ref in (None, ""):
+        row[out_key] = None
+        return
+    row[out_key] = float(row[actual_key]) - float(ref)
+
+
+def dispatch_diesel_for_load(p: Any, demand_kw: float, dt_s: float) -> dict[str, Any]:
+    remaining_w = max(0.0, float(demand_kw) * 1000.0)
+    units: list[dict[str, Any]] = []
+    fuel_kg = 0.0
+    total_w = 0.0
+    for unit in getattr(p, "diesel_units", []) or []:
+        if remaining_w <= 1e-9:
+            power_w = 0.0
+        else:
+            power_w = min(remaining_w, float(unit.get("p_max_w", 0.0)))
+            if power_w > 1e-9:
+                power_w = max(power_w, float(unit.get("p_min_w", 0.0)))
+        remaining_w = max(0.0, remaining_w - power_w)
+        if power_w > 1e-9:
+            fuel_rate = float(np.interp(power_w, np.asarray(unit["powers_w"], dtype=float), np.asarray(unit["fuel_kg_h"], dtype=float)))
+        else:
+            fuel_rate = 0.0
+        fuel_kg += fuel_rate * dt_s / 3600.0
+        total_w += power_w
+        units.append({"id": unit.get("id"), "power_kw": power_w / 1000.0, "fuel_kg_h": fuel_rate})
+    return {
+        "diesel_kw": total_w / 1000.0,
+        "fuel_kg": fuel_kg,
+        "unserved_kw": max(0.0, remaining_w / 1000.0),
+        "units": units,
+    }
+
+
+def run_dispatch_time_domain_verification(solver, p: Any, data: dict[str, Any], schedule_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    dt_s = float(data["dt"])
+    n_data = int(data.get("N") or len(data.get("hours", [])))
+    n = min(len(schedule_rows), n_data) if n_data else len(schedule_rows)
+    if n <= 0:
+        raise ValueError("调度控制曲线没有可仿真的时刻数据")
+
+    soc = float(p.SOC_init)
+    tbat = float(p.T_bat_init)
+    ttank = float(p.T_tank_init)
+    tcont = float(p.T_cont_init)
+    rows: list[dict[str, Any]] = []
+    totals = {"fuel_kg": 0.0, "pv_use_kwh": 0.0, "wt_use_kwh": 0.0, "pv_curt_kwh": 0.0, "wt_curt_kwh": 0.0, "unserved_kwh": 0.0}
+
+    for t in range(n):
+        control = schedule_rows[t]
+        hour = float(control.get("hour") if control.get("hour") not in (None, "") else _interp_profile(data, "hours", t, t * dt_s / 3600.0))
+        i_bat = float(control.get("pack_current_a") or 0.0)
+        u_pi = float(control.get("u_pi") or 0.0)
+        u_po = float(control.get("u_po") or 0.0)
+        u_lh = float(control.get("u_lh") or 0.0)
+        u_ch = float(control.get("u_ch") or 0.0)
+        p_heat_liquid_w = max(0.0, float(control.get("p_heat_liquid_kw") or 0.0) * 1000.0)
+        p_heat_cont_w = max(0.0, float(control.get("p_heat_cont_kw") or 0.0) * 1000.0)
+        if u_lh <= 0:
+            p_heat_liquid_w = 0.0
+        if u_ch <= 0:
+            p_heat_cont_w = 0.0
+
+        r0 = float(solver.bilinear_interp(soc, tbat, p.soc_pts, p.temp_pts, p.r0_table))
+        ocv = float(np.interp(soc, p.ocv_soc, p.ocv_1d))
+        terminal_v = ocv - i_bat * r0
+        qgen_w = i_bat * i_bat * r0
+        pdc_w = ocv * i_bat - qgen_w
+        aux_w = u_pi * p.P_pump_in + u_po * p.P_pump_out + p_heat_liquid_w + p_heat_cont_w
+        pbess_w = pdc_w - p.mu_pcs * abs(pdc_w) - aux_w
+        pbess_kw = pbess_w / 1000.0
+
+        load_kw = _interp_profile(data, "P_load", t) / 1000.0
+        pv_avail_kw = _interp_profile(data, "P_pv", t) / 1000.0
+        wt_avail_kw = _interp_profile(data, "P_wt", t) / 1000.0
+        net_after_bess_kw = load_kw - pbess_kw
+        renewable_need_kw = max(0.0, net_after_bess_kw)
+        pv_use_kw = min(pv_avail_kw, renewable_need_kw)
+        wt_use_kw = min(wt_avail_kw, max(0.0, renewable_need_kw - pv_use_kw))
+        diesel_need_kw = max(0.0, net_after_bess_kw - pv_use_kw - wt_use_kw)
+        diesel = dispatch_diesel_for_load(p, diesel_need_kw, dt_s)
+        unserved_kw = float(diesel["unserved_kw"])
+        oversupply_kw = max(0.0, diesel["diesel_kw"] - diesel_need_kw)
+        pv_curt_kw = max(0.0, pv_avail_kw - pv_use_kw)
+        wt_curt_kw = max(0.0, wt_avail_kw - wt_use_kw)
+        balance_kw = pv_use_kw + wt_use_kw + diesel["diesel_kw"] + pbess_kw - load_kw - oversupply_kw - unserved_kw
+
+        charge_limit = float(np.interp(tbat, p.current_limit_temps, p.charge_current_limit_pack, left=p.charge_current_limit_pack[0], right=p.charge_current_limit_pack[-1]))
+        discharge_limit = float(np.interp(tbat, p.current_limit_temps, p.discharge_current_limit_pack, left=p.discharge_current_limit_pack[0], right=p.discharge_current_limit_pack[-1]))
+        soc_violation = max(float(p.SOC_min) - soc, 0.0) + max(soc - float(p.SOC_max), 0.0)
+        charge_violation = max(-i_bat - charge_limit, 0.0)
+        discharge_violation = max(i_bat - discharge_limit, 0.0)
+        tbat_violation = max(float(p.T_bat_min) - tbat, 0.0) + max(tbat - float(p.T_bat_max), 0.0)
+        ttank_violation = max(float(p.T_tank_min) - ttank, 0.0) + max(ttank - float(p.T_tank_max), 0.0)
+        tcont_violation = max(float(p.T_cont_min) - tcont, 0.0) + max(tcont - float(p.T_cont_max), 0.0)
+
+        row = {
+            "step": t,
+            "hour": hour,
+            "i_pack_a": i_bat,
+            "i_cell_a": i_bat / max(1, int(getattr(p, "N_p", 1))),
+            "soc_sim": soc,
+            "t_bat_sim_c": tbat,
+            "t_tank_sim_c": ttank,
+            "t_cont_sim_c": tcont,
+            "u_terminal_sim_v": terminal_v,
+            "r0_sim_ohm": r0,
+            "qgen_sim_kw": qgen_w / 1000.0,
+            "pbess_sim_kw": pbess_kw,
+            "load_kw": load_kw,
+            "pv_available_kw": pv_avail_kw,
+            "wt_available_kw": wt_avail_kw,
+            "pv_use_actual_kw": pv_use_kw,
+            "wt_use_actual_kw": wt_use_kw,
+            "pv_curt_actual_kw": pv_curt_kw,
+            "wt_curt_actual_kw": wt_curt_kw,
+            "diesel_actual_kw": diesel["diesel_kw"],
+            "diesel_fuel_kg": diesel["fuel_kg"],
+            "unserved_kw": unserved_kw,
+            "oversupply_kw": oversupply_kw,
+            "power_balance_kw": balance_kw,
+            "soc_ref": control.get("soc_ref"),
+            "t_bat_ref_c": control.get("t_bat_ref_c"),
+            "t_tank_ref_c": control.get("t_tank_ref_c"),
+            "t_cont_ref_c": control.get("t_cont_ref_c"),
+            "pbess_ref_kw": control.get("pbess_ref_kw"),
+            "soc_violation": soc_violation,
+            "charge_current_violation_a": charge_violation,
+            "discharge_current_violation_a": discharge_violation,
+            "t_bat_violation_c": tbat_violation,
+            "t_tank_violation_c": ttank_violation,
+            "t_cont_violation_c": tcont_violation,
+            "u_pi": u_pi,
+            "u_po": u_po,
+            "u_lh": u_lh,
+            "u_ch": u_ch,
+            "p_heat_liquid_kw": p_heat_liquid_w / 1000.0,
+            "p_heat_cont_kw": p_heat_cont_w / 1000.0,
+        }
+        _reference_error(row, "soc_sim", "soc_ref", "soc_error")
+        _reference_error(row, "t_bat_sim_c", "t_bat_ref_c", "t_bat_error_c")
+        _reference_error(row, "t_tank_sim_c", "t_tank_ref_c", "t_tank_error_c")
+        _reference_error(row, "t_cont_sim_c", "t_cont_ref_c", "t_cont_error_c")
+        _reference_error(row, "pbess_sim_kw", "pbess_ref_kw", "pbess_error_kw")
+        rows.append(row)
+
+        totals["fuel_kg"] += diesel["fuel_kg"]
+        totals["pv_use_kwh"] += pv_use_kw * dt_s / 3600.0
+        totals["wt_use_kwh"] += wt_use_kw * dt_s / 3600.0
+        totals["pv_curt_kwh"] += pv_curt_kw * dt_s / 3600.0
+        totals["wt_curt_kwh"] += wt_curt_kw * dt_s / 3600.0
+        totals["unserved_kwh"] += unserved_kw * dt_s / 3600.0
+
+        qbt = u_pi * p.K_bt * (tbat - ttank)
+        qtamb = u_po * p.K_t_amb * (ttank - _interp_profile(data, "T_amb", t))
+        soc = soc - i_bat * dt_s / (p.Q_nom * 3600.0)
+        tbat, ttank, tcont = solve_implicit_temperature_step(
+            p,
+            dt_s,
+            tbat,
+            ttank,
+            tcont,
+            _interp_profile(data, "T_amb", t),
+            qgen_w,
+            qbt,
+            qtamb,
+            u_lh if p_heat_liquid_w > 0 else 0.0,
+            u_ch if p_heat_cont_w > 0 else 0.0,
+            p_heat_liquid_w=p_heat_liquid_w,
+            p_heat_cont_w=p_heat_cont_w,
+        )
+
+    metrics = {
+        "status": "SIMULATED",
+        "steps": n,
+        "dt_minutes": dt_s / 60.0,
+        "soc": error_stats([row.get("soc_error") for row in rows]),
+        "t_bat_c": error_stats([row.get("t_bat_error_c") for row in rows]),
+        "t_tank_c": error_stats([row.get("t_tank_error_c") for row in rows]),
+        "t_cont_c": error_stats([row.get("t_cont_error_c") for row in rows]),
+        "pbess_kw": error_stats([row.get("pbess_error_kw") for row in rows]),
+        "diesel": {"fuel_kg": totals["fuel_kg"], "max_kw": max((row["diesel_actual_kw"] for row in rows), default=0.0)},
+        "renewable": {
+            "pv_use_kwh": totals["pv_use_kwh"],
+            "wt_use_kwh": totals["wt_use_kwh"],
+            "pv_curt_kwh": totals["pv_curt_kwh"],
+            "wt_curt_kwh": totals["wt_curt_kwh"],
+            "unserved_kwh": totals["unserved_kwh"],
+        },
+        "violations": {
+            "soc_max": max((row["soc_violation"] for row in rows), default=0.0),
+            "charge_current_max_a": max((row["charge_current_violation_a"] for row in rows), default=0.0),
+            "discharge_current_max_a": max((row["discharge_current_violation_a"] for row in rows), default=0.0),
+            "t_bat_max_c": max((row["t_bat_violation_c"] for row in rows), default=0.0),
+            "t_tank_max_c": max((row["t_tank_violation_c"] for row in rows), default=0.0),
+            "t_cont_max_c": max((row["t_cont_violation_c"] for row in rows), default=0.0),
+            "power_balance_max_kw": max((abs(row["power_balance_kw"]) for row in rows), default=0.0),
+        },
+    }
+    return {"metrics": metrics, "rows": rows}
 
 
 def detailed_replay_verification(solver, p, result: dict[str, Any]) -> dict[str, Any]:
@@ -1470,7 +2082,22 @@ def detailed_replay_verification(solver, p, result: dict[str, Any]) -> dict[str,
     return {"metrics": metrics, "rows": rows}
 
 
-def solve_implicit_temperature_step(p, dt_s, tb, tt, tc, tamb, qgen, qbt, qtamb, u_lh, u_ch) -> tuple[float, float, float]:
+def solve_implicit_temperature_step(
+    p,
+    dt_s,
+    tb,
+    tt,
+    tc,
+    tamb,
+    qgen,
+    qbt,
+    qtamb,
+    u_lh,
+    u_ch,
+    *,
+    p_heat_liquid_w: float | None = None,
+    p_heat_cont_w: float | None = None,
+) -> tuple[float, float, float]:
     ab = dt_s / p.C_bat
     at = dt_s / p.C_tank
     ac = dt_s / p.C_cont
@@ -1485,8 +2112,8 @@ def solve_implicit_temperature_step(p, dt_s, tb, tt, tc, tamb, qgen, qbt, qtamb,
     rhs = np.array(
         [
             tb + ab * (qgen - qbt),
-            tt + at * (qbt + u_lh * p.P_heat_liquid - qtamb),
-            tc + ac * (u_ch * p.P_heat_cont + p.K_cont_amb * tamb),
+            tt + at * (qbt + (u_lh * p.P_heat_liquid if p_heat_liquid_w is None else p_heat_liquid_w) - qtamb),
+            tc + ac * ((u_ch * p.P_heat_cont if p_heat_cont_w is None else p_heat_cont_w) + p.K_cont_amb * tamb),
         ],
         dtype=float,
     )
@@ -1522,15 +2149,27 @@ def write_verification_csv(path: Path, rows: list[dict[str, Any]]) -> None:
 def verification_summary_text(verification: dict[str, Any]) -> str:
     metrics = verification["metrics"]
     cfg = verification.get("config", {})
+    diesel = metrics.get("diesel") or {}
+    renewable = metrics.get("renewable") or {}
+    violations = metrics.get("violations") or {}
+    pv_use = renewable.get("pv_use_kwh")
+    wt_use = renewable.get("wt_use_kwh")
+    pv_curt = renewable.get("pv_curt_kwh")
+    wt_curt = renewable.get("wt_curt_kwh")
+    renewable_use = None if pv_use is None and wt_use is None else float(pv_use or 0.0) + float(wt_use or 0.0)
+    renewable_curt = None if pv_curt is None and wt_curt is None else float(pv_curt or 0.0) + float(wt_curt or 0.0)
     lines = [
         "# 方案校核结果",
         "",
+        "- 计算方式: `时域仿真`",
         f"- 模式: `{cfg.get('mode')}`",
-        f"- 求解器: `{cfg.get('solver_resolved')}` / `{cfg.get('solver_backend')}`",
         f"- 步长: `{cfg.get('dt_minutes')}` 分钟",
         f"- 周期: `{cfg.get('horizon_hours')}` 小时",
-        f"- 优化状态: `{metrics.get('status')}`",
-        f"- 目标函数: `{metrics.get('objective')}`",
+        f"- 调度文件: `{Path(str(cfg.get('dispatch_schedule') or DISPATCH_SCHEDULE_FILE_NAME)).name}`",
+        f"- 仿真状态: `{metrics.get('status')}`",
+        f"- 时刻数: `{metrics.get('steps')}`",
+        "",
+        "## 参考曲线偏差",
         "",
         "| 指标 | 最大绝对偏差 | 平均绝对偏差 | RMSE | 末端偏差 |",
         "|---|---:|---:|---:|---:|",
@@ -1551,7 +2190,33 @@ def verification_summary_text(verification: dict[str, Any]) -> str:
         )
     lines += [
         "",
-        "说明：校核曲线使用优化给出的电流、泵/加热器开关和出力调度，按详细 R0/OCV 查表、端口电压、I²R 发热、SOC 积分和三节点热平衡公式逐步回放。",
+        "## 运行效果",
+        "",
+        "| 类别 | 指标 | 数值 |",
+        "|---|---|---:|",
+        f"| 柴油 | 柴油实际耗油(kg) | {format_metric(diesel.get('fuel_kg'))} |",
+        f"| 柴油 | 柴油最大出力(kW) | {format_metric(diesel.get('max_kw'))} |",
+        f"| 新能源实际消纳 | 光伏(kWh) | {format_metric(pv_use)} |",
+        f"| 新能源实际消纳 | 风电(kWh) | {format_metric(wt_use)} |",
+        f"| 新能源实际消纳 | 合计(kWh) | {format_metric(renewable_use)} |",
+        f"| 新能源弃电 | 弃光(kWh) | {format_metric(pv_curt)} |",
+        f"| 新能源弃电 | 弃风(kWh) | {format_metric(wt_curt)} |",
+        f"| 新能源弃电 | 合计(kWh) | {format_metric(renewable_curt)} |",
+        f"| 供电 | 未供电量(kWh) | {format_metric(renewable.get('unserved_kwh'))} |",
+        "",
+        "## 越限校核",
+        "",
+        "| 指标 | 最大越限 |",
+        "|---|---:|",
+        f"| SOC | {format_metric(violations.get('soc_max'))} |",
+        f"| 充电电流(A) | {format_metric(violations.get('charge_current_max_a'))} |",
+        f"| 放电电流(A) | {format_metric(violations.get('discharge_current_max_a'))} |",
+        f"| 电芯温度(℃) | {format_metric(violations.get('t_bat_max_c'))} |",
+        f"| 液冷罐温度(℃) | {format_metric(violations.get('t_tank_max_c'))} |",
+        f"| 舱体温度(℃) | {format_metric(violations.get('t_cont_max_c'))} |",
+        f"| 功率平衡残差(kW) | {format_metric(violations.get('power_balance_max_kw'))} |",
+        "",
+        "说明：校核以独立调度控制曲线文件中的电芯电流、循环泵启停、电加热启停与功率为输入，按详细 R0/OCV 查表、端口电压、I²R 发热、SOC 积分和三节点热平衡公式逐步推进，评估该方案执行后的电热边界与能源消纳效果。",
     ]
     return "\n".join(lines) + "\n"
 
@@ -1732,6 +2397,8 @@ def optimization_comparison_items() -> list[dict[str, Any]]:
                     "soc_max": metrics.get("soc_max"),
                     "tbat_min_c": metrics.get("tbat_min_c"),
                     "tbat_max_c": metrics.get("tbat_max_c"),
+                    "charge_current_limit_violation_max_a": metrics.get("charge_current_limit_violation_max_a"),
+                    "discharge_current_limit_violation_max_a": metrics.get("discharge_current_limit_violation_max_a"),
                     "ttank_min_c": metrics.get("ttank_min_c"),
                     "ttank_max_c": metrics.get("ttank_max_c"),
                     "tcont_min_c": metrics.get("tcont_min_c"),
@@ -1820,12 +2487,39 @@ def flatten_verification_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
         group = metrics.get(name) if isinstance(metrics, dict) else {}
         return group.get(key) if isinstance(group, dict) else None
 
+    def group(name: str) -> dict[str, Any]:
+        value = metrics.get(name) if isinstance(metrics, dict) else {}
+        return value if isinstance(value, dict) else {}
+
+    def sum_available(*values: Any) -> Any:
+        present = [float(value) for value in values if value is not None]
+        return sum(present) if present else None
+
+    diesel = group("diesel")
+    renewable = group("renewable")
+    violations = group("violations")
     return {
+        "status": metrics.get("status"),
         "objective": metrics.get("objective"),
-        "fuel_kg": metrics.get("fuel_kg"),
+        "fuel_kg": diesel.get("fuel_kg", metrics.get("fuel_kg")),
+        "diesel_max_kw": diesel.get("max_kw"),
         "gap": metrics.get("gap"),
         "steps": metrics.get("steps"),
         "dt_minutes": metrics.get("dt_minutes"),
+        "pv_use_kwh": renewable.get("pv_use_kwh"),
+        "wt_use_kwh": renewable.get("wt_use_kwh"),
+        "renewable_use_kwh": sum_available(renewable.get("pv_use_kwh"), renewable.get("wt_use_kwh")),
+        "pv_curt_kwh": renewable.get("pv_curt_kwh"),
+        "wt_curt_kwh": renewable.get("wt_curt_kwh"),
+        "renewable_curt_kwh": sum_available(renewable.get("pv_curt_kwh"), renewable.get("wt_curt_kwh")),
+        "unserved_kwh": renewable.get("unserved_kwh"),
+        "soc_violation_max": violations.get("soc_max"),
+        "charge_current_violation_max_a": violations.get("charge_current_max_a"),
+        "discharge_current_violation_max_a": violations.get("discharge_current_max_a"),
+        "t_bat_violation_max_c": violations.get("t_bat_max_c"),
+        "t_tank_violation_max_c": violations.get("t_tank_max_c"),
+        "t_cont_violation_max_c": violations.get("t_cont_max_c"),
+        "power_balance_max_kw": violations.get("power_balance_max_kw"),
         "soc_max_abs": stat("soc", "max_abs"),
         "soc_mae": stat("soc", "mae"),
         "soc_rmse": stat("soc", "rmse"),
@@ -1870,11 +2564,24 @@ def comparison_fields(items: list[dict[str, Any]]) -> list[dict[str, str]]:
                 {"key": "soc_max", "label": "SOC最大"},
                 {"key": "tbat_min_c", "label": "电芯最低温(℃)"},
                 {"key": "tbat_max_c", "label": "电芯最高温(℃)"},
+                {"key": "charge_current_limit_violation_max_a", "label": "充电限值越限(A)"},
+                {"key": "discharge_current_limit_violation_max_a", "label": "放电限值越限(A)"},
             ]
         )
     if has_verify:
         fields.extend(
             [
+                {"key": "diesel_max_kw", "label": "柴油最大出力(kW)"},
+                {"key": "renewable_use_kwh", "label": "新能源消纳(kWh)"},
+                {"key": "renewable_curt_kwh", "label": "新能源弃电(kWh)"},
+                {"key": "unserved_kwh", "label": "未供电量(kWh)"},
+                {"key": "soc_violation_max", "label": "SOC越限"},
+                {"key": "charge_current_violation_max_a", "label": "充电电流越限(A)"},
+                {"key": "discharge_current_violation_max_a", "label": "放电电流越限(A)"},
+                {"key": "t_bat_violation_max_c", "label": "电芯温度越限(℃)"},
+                {"key": "t_tank_violation_max_c", "label": "液冷罐温度越限(℃)"},
+                {"key": "t_cont_violation_max_c", "label": "舱体温度越限(℃)"},
+                {"key": "power_balance_max_kw", "label": "功率平衡残差(kW)"},
                 {"key": "soc_max_abs", "label": "SOC最大偏差"},
                 {"key": "soc_mae", "label": "SOC MAE"},
                 {"key": "t_bat_max_abs_c", "label": "电芯温度最大偏差(℃)"},
@@ -2045,6 +2752,9 @@ class EstoreHandler(SimpleHTTPRequestHandler):
         elif path == "/api/compute-config":
             name = params.get("scheme", [""])[0]
             json_response(self, {"scheme": name, "config": read_scheme_compute_config(name)})
+        elif path == "/api/dispatch-schedule":
+            name = params.get("scheme", [""])[0]
+            json_response(self, dispatch_schedule_payload(name))
         elif path == "/api/tasks":
             json_response(self, TASKS.snapshot())
         elif path == "/api/task-board":
@@ -2129,6 +2839,14 @@ class EstoreHandler(SimpleHTTPRequestHandler):
             data = self.read_json_body(body)
             task = VERIFY_TASKS.cancel(data.get("id", ""))
             json_response(self, {"ok": True, "verification": VERIFY_TASKS.detail(task.id), **VERIFY_TASKS.snapshot()})
+        elif path == "/api/dispatch-schedule/init":
+            data = self.read_json_body(body)
+            payload = initialize_scheme_dispatch_schedule(data.get("scheme", ""), data.get("config") or None)
+            json_response(self, {"ok": True, **payload, "schemes": list_schemes()})
+        elif path == "/api/dispatch-schedule/from-optimization":
+            data = self.read_json_body(body)
+            scheme = create_dispatch_scheme_from_optimization(data.get("task_id", ""), data.get("name", ""), data.get("description", ""))
+            json_response(self, {"ok": True, "scheme": scheme, "dispatch": dispatch_schedule_payload(scheme["name"]), "schemes": list_schemes()})
         elif path == "/api/compute-config":
             data = self.read_json_body(body)
             name = data.get("scheme", "")
@@ -2158,6 +2876,10 @@ class EstoreHandler(SimpleHTTPRequestHandler):
             else:
                 payload = write_sheet(data.get("scheme", ""), data.get("sheet", ""), data.get("rows") or [], page, page_size)
             json_response(self, {"ok": True, **payload})
+        elif path == "/api/dispatch-schedule":
+            data = self.read_json_body(body)
+            payload = write_scheme_dispatch_schedule(data.get("scheme", ""), data.get("rows") or [])
+            json_response(self, {"ok": True, **payload, "schemes": list_schemes()})
         else:
             json_response(self, {"ok": False, "message": "接口不存在"}, 404)
 

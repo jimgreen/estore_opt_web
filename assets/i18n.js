@@ -95,7 +95,6 @@ const I18N = {
     "form.threads": "线程数",
     "form.currentMode": "电流模式",
     "form.tightTemp": "使用紧温度边界",
-    "form.warmStart": "粗模型热启动",
     "form.buildOnly": "仅建模检查",
     "form.maxParallel": "并行任务数"
   },
@@ -195,7 +194,6 @@ const I18N = {
     "form.threads": "Threads",
     "form.currentMode": "Current Mode",
     "form.tightTemp": "Use Tight Temperature Bounds",
-    "form.warmStart": "Coarse Warm Start",
     "form.buildOnly": "Build Only",
     "form.maxParallel": "Parallel Jobs"
   }

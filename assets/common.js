@@ -48,7 +48,7 @@ function formConfig(form) {
   const data = new FormData(form);
   const cfg = {};
   for (const [key, value] of data.entries()) {
-    if (["tight_temp_bounds", "coarse_warm_start", "build_only", "strict_current_sos2"].includes(key)) {
+    if (["tight_temp_bounds", "build_only", "strict_current_sos2"].includes(key)) {
       cfg[key] = true;
     } else if (["time_limit", "mip_gap", "dt_minutes", "soc_grid_width", "heuristics"].includes(key)) {
       cfg[key] = Number(value);
@@ -58,7 +58,7 @@ function formConfig(form) {
       cfg[key] = value;
     }
   }
-  for (const name of ["tight_temp_bounds", "coarse_warm_start", "build_only", "strict_current_sos2"]) {
+  for (const name of ["tight_temp_bounds", "build_only", "strict_current_sos2"]) {
     if (form.elements[name] && !data.has(name)) cfg[name] = false;
   }
   return cfg;

@@ -107,7 +107,8 @@ function renderMetricText(task) {
     const temp = metrics.t_bat_c?.max_abs;
     return `SOC偏差 ${fmt(soc, 6)} / 电芯温差 ${fmt(temp, 6)}`;
   }
-  return `燃油 ${fmt(metrics.fuel_kg)} / Gap ${fmt(metrics.gap)}`;
+  const currentViolation = Math.max(Number(metrics.charge_current_limit_violation_max_a || 0), Number(metrics.discharge_current_limit_violation_max_a || 0));
+  return `燃油 ${fmt(metrics.fuel_kg)} / Gap ${fmt(metrics.gap)} / 电流越限 ${fmt(currentViolation, 6)}A`;
 }
 
 function boardStatusClass(status) {

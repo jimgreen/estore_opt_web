@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import csv
 import json
 import math
 import os
@@ -148,6 +149,10 @@ def compact_result_for_progress(result: dict | None) -> dict:
             "heat_kwh": result.get("heat_kwh"),
             "solver_used": result.get("solver_used"),
             "solver_backend": result.get("solver_backend"),
+            "state_workbook": result.get("state_workbook"),
+            "result_data": result.get("result_data"),
+            "result_statistics": result.get("result_statistics"),
+            "result_timeseries_csv": result.get("result_timeseries_csv"),
             "model_stats": {
                 "solver_name": stats.get("solver_name"),
                 "solver_backend": stats.get("solver_backend"),
@@ -179,6 +184,8 @@ class Breakpoints:
     r0: np.ndarray
     current: np.ndarray
     current2: np.ndarray
+    charge_current_limit: np.ndarray
+    discharge_current_limit: np.ndarray
     dt_hours: float
     mode: str
 
@@ -233,8 +240,52 @@ def load_params(path: Path) -> SimpleNamespace:
     p.Q_nom = float(pack.get("q_pack_ah", p.N_p * p.Q_cell))
     p.SOC_min = float(cell["soc_min"])
     p.SOC_max = float(cell["soc_max"])
-    p.I_discharge_max = float(pack.get("i_pack_max_a", cabinet["pcs_i_max_a"]))
-    p.I_charge_max = float(pack.get("i_pack_max_a", cabinet["pcs_i_max_a"]))
+    pack_i_max = float(pack.get("i_pack_max_a", cabinet["pcs_i_max_a"]))
+    pcs_i_max = float(cabinet["pcs_i_max_a"])
+    cell_current_limits = raw.get("cell_current_limits") or {}
+    if all(
+        key in pack
+        for key in (
+            "current_limit_temperatures_c",
+            "charge_current_limit_a",
+            "discharge_current_limit_a",
+        )
+    ):
+        limit_temps = np.asarray(pack["current_limit_temperatures_c"], dtype=float)
+        charge_limit_pack = np.asarray(pack["charge_current_limit_a"], dtype=float)
+        discharge_limit_pack = np.asarray(pack["discharge_current_limit_a"], dtype=float)
+    elif all(key in cell_current_limits for key in ("temperatures_c", "charge_max_a", "discharge_max_a")):
+        limit_temps = np.asarray(cell_current_limits["temperatures_c"], dtype=float)
+        charge_limit_pack = np.asarray(cell_current_limits["charge_max_a"], dtype=float) * p.N_p
+        discharge_limit_pack = np.asarray(cell_current_limits["discharge_max_a"], dtype=float) * p.N_p
+    else:
+        limit_temps = np.asarray(temp_pts, dtype=float)
+        charge_limit_pack = np.full(limit_temps.shape, float(cell.get("i_charge_max_a", pack_i_max / max(1, p.N_p))) * p.N_p)
+        discharge_limit_pack = np.full(limit_temps.shape, float(cell.get("i_discharge_max_a", pack_i_max / max(1, p.N_p))) * p.N_p)
+    if not (len(limit_temps) and len(limit_temps) == len(charge_limit_pack) == len(discharge_limit_pack)):
+        raise ValueError("Cell current-limit table must have matching temperature, charge, and discharge columns.")
+    order = np.argsort(limit_temps)
+    limit_temps = limit_temps[order]
+    charge_limit_pack = charge_limit_pack[order]
+    discharge_limit_pack = discharge_limit_pack[order]
+    if len(limit_temps) > 1 and np.any(np.diff(limit_temps) <= 0):
+        raise ValueError("Cell current-limit temperatures must be unique and strictly increasing.")
+    if not (
+        np.all(np.isfinite(limit_temps))
+        and np.all(np.isfinite(charge_limit_pack))
+        and np.all(np.isfinite(discharge_limit_pack))
+    ):
+        raise ValueError("Cell current-limit table contains non-finite values.")
+    if np.any(charge_limit_pack <= 0.0) or np.any(discharge_limit_pack <= 0.0):
+        raise ValueError("Cell current-limit values must be positive.")
+    p.current_limit_temps = limit_temps
+    p.charge_current_limit_pack = charge_limit_pack
+    p.discharge_current_limit_pack = discharge_limit_pack
+    p.pack_current_hardware_max = min(pack_i_max, pcs_i_max)
+    p.charge_current_limit_effective_pack = np.minimum(charge_limit_pack, p.pack_current_hardware_max)
+    p.discharge_current_limit_effective_pack = np.minimum(discharge_limit_pack, p.pack_current_hardware_max)
+    p.I_charge_max = float(np.max(p.charge_current_limit_effective_pack))
+    p.I_discharge_max = float(np.max(p.discharge_current_limit_effective_pack))
     p.I_abs_max = max(p.I_discharge_max, p.I_charge_max)
 
     p.T_bat_min = float(cell["temp_min_c"])
@@ -389,6 +440,31 @@ def _lookup_table(ws) -> tuple[list[float], list[float], list[list[float]]]:
     return soc, temperatures, values
 
 
+def _current_limit_table(ws) -> dict[str, list[float]]:
+    max_row, _ = _table_extent(ws)
+    rows: list[tuple[float, float, float]] = []
+    for row in range(2, max_row + 1):
+        temp_value = ws.cell(row, 1).value
+        if temp_value is None or temp_value == "":
+            continue
+        rows.append(
+            (
+                _float(temp_value),
+                _float(ws.cell(row, 2).value),
+                _float(ws.cell(row, 3).value),
+            )
+        )
+    if not rows:
+        raise ValueError("Cell current-limit table must contain at least one data row.")
+    rows.sort(key=lambda item: item[0])
+    temperatures, charge_max, discharge_max = zip(*rows)
+    return {
+        "temperatures_c": [float(value) for value in temperatures],
+        "charge_max_a": [float(value) for value in charge_max],
+        "discharge_max_a": [float(value) for value in discharge_max],
+    }
+
+
 def load_raw_params_from_excel(path: Path) -> dict:
     """Convert the model-definition workbook into the raw JSON schema used by load_params."""
     try:
@@ -431,6 +507,17 @@ def load_raw_params_from_excel(path: Path) -> dict:
     q_cell = 40.0
     q_pack = n_p * q_cell
     pcs_i_max = _float(cabinet[10])
+    current_limit_sheet = "电芯电流限值"
+    if current_limit_sheet in wb.sheetnames:
+        cell_current_limits = _current_limit_table(wb[current_limit_sheet])
+    else:
+        cell_current_limits = {
+            "temperatures_c": [float(value) for value in r0_temps],
+            "charge_max_a": [_float(cell[7]) for _ in r0_temps],
+            "discharge_max_a": [_float(cell[6]) for _ in r0_temps],
+        }
+    charge_current_limit_pack = [n_p * float(value) for value in cell_current_limits["charge_max_a"]]
+    discharge_current_limit_pack = [n_p * float(value) for value in cell_current_limits["discharge_max_a"]]
     r_pack = [[n_s / n_p * float(v) for v in row] for row in r0_values]
     u_pack = [n_s * float(v) for v in ocv_values_1d]
 
@@ -546,6 +633,7 @@ def load_raw_params_from_excel(path: Path) -> dict:
             "i_charge_max_a": _float(cell[7]),
             "capacity_source_note": "Excel workbook does not expose cell Ah explicitly; 40 Ah/cell is kept from the existing pack model.",
         },
+        "cell_current_limits": cell_current_limits,
         "liquid_cooling": {
             "c_th_kj_per_k": _float(liquid[1]),
             "k_t_container_kw_per_k": _float(liquid[2]),
@@ -572,6 +660,9 @@ def load_raw_params_from_excel(path: Path) -> dict:
         "battery_pack": {
             "q_pack_ah": q_pack,
             "i_pack_max_a": pcs_i_max,
+            "current_limit_temperatures_c": cell_current_limits["temperatures_c"],
+            "charge_current_limit_a": charge_current_limit_pack,
+            "discharge_current_limit_a": discharge_current_limit_pack,
             "u_ocv_pack_v": u_pack,
             "r_pack_ohm": r_pack,
             "conversion_note": "Pack model uses U_pack=N_s*OCV_cell, R_pack=(N_s/N_p)*R_cell, Q_pack=N_p*Q_cell, I_pack=PCS DC current.",
@@ -648,6 +739,38 @@ def select_soc_grid_indices(p: SimpleNamespace, soc_grid_width: float) -> np.nda
     return indices
 
 
+def select_soc_breakpoints(p: SimpleNamespace, soc_grid_width: float) -> np.ndarray:
+    if float(soc_grid_width) <= 0.0:
+        raise ValueError("soc_grid_width must be positive.")
+    soc_source = np.asarray(p.soc_pts, dtype=float)
+    if soc_source.ndim != 1 or soc_source.size == 0:
+        raise ValueError("SOC lookup table must contain at least one point.")
+    if soc_source.size > 1 and np.any(np.diff(soc_source) <= 0.0):
+        raise ValueError("SOC lookup table points must be strictly increasing.")
+    soc_min = max(float(p.SOC_min), float(np.min(soc_source)))
+    soc_max = min(float(p.SOC_max), float(np.max(soc_source)))
+    if soc_min > soc_max:
+        raise ValueError("SOC operating bounds do not overlap SOC lookup table.")
+
+    width = float(soc_grid_width)
+    values = [soc_min]
+    next_value = soc_min + width
+    while next_value < soc_max - 1e-9:
+        values.append(next_value)
+        next_value += width
+    if soc_max - values[-1] > 1e-9:
+        values.append(soc_max)
+    return np.asarray(values, dtype=float)
+
+
+def interpolate_soc_table(soc_targets: np.ndarray, soc_source: np.ndarray, table: np.ndarray) -> np.ndarray:
+    source = np.asarray(soc_source, dtype=float)
+    values = np.asarray(table, dtype=float)
+    if values.ndim != 2 or values.shape[0] != source.size:
+        raise ValueError("SOC-dependent lookup table shape does not match SOC points.")
+    return np.column_stack([np.interp(soc_targets, source, values[:, col]) for col in range(values.shape[1])])
+
+
 def make_breakpoints(
     p: SimpleNamespace,
     mode: str,
@@ -679,11 +802,24 @@ def make_breakpoints(
         n_i = int(cfg["current_segments"]) + 1
 
     grid_width = float(soc_grid_width if soc_grid_width is not None else cfg["soc_grid_width"])
-    soc_idx = select_soc_grid_indices(p, grid_width)
-    soc_bp = p.soc_pts[soc_idx]
+    soc_bp = select_soc_breakpoints(p, grid_width)
     ocv_bp = np.interp(soc_bp, p.ocv_soc, p.ocv_1d)
     temp_full, r0_full = extend_temperature_table(p)
-    r0_bp = r0_full[soc_idx, :]
+    r0_bp = interpolate_soc_table(soc_bp, p.soc_pts, r0_full)
+    charge_current_limit_bp = np.interp(
+        temp_full,
+        p.current_limit_temps,
+        p.charge_current_limit_pack,
+        left=p.charge_current_limit_pack[0],
+        right=p.charge_current_limit_pack[-1],
+    )
+    discharge_current_limit_bp = np.interp(
+        temp_full,
+        p.current_limit_temps,
+        p.discharge_current_limit_pack,
+        left=p.discharge_current_limit_pack[0],
+        right=p.discharge_current_limit_pack[-1],
+    )
 
     if getattr(p, "diag_discrete_current", False):
         levels = int(getattr(p, "diag_discrete_current_levels", 21))
@@ -700,6 +836,8 @@ def make_breakpoints(
         r0=r0_bp,
         current=current_bp,
         current2=current_bp**2,
+        charge_current_limit=charge_current_limit_bp,
+        discharge_current_limit=discharge_current_limit_bp,
         dt_hours=dt_hours,
         mode=mode,
     )
@@ -774,7 +912,7 @@ def estimate_model_size(
     if current_mode == "discrete":
         binaries += n_steps * n_i
     constraints = n_steps * (
-        44 + n_s + n_t + n_s + n_t + n_s * n_t + n_dg_units * 6
+        46 + n_s + n_t + n_s + n_t + n_s * n_t + n_dg_units * 6
     )
     if current_mode == "discrete":
         constraints += n_steps * (1 + n_i)
@@ -925,6 +1063,22 @@ def big_m_diagnostics(p: SimpleNamespace, data: dict[str, np.ndarray | float | i
     return rows
 
 
+def current_limit_stats(bp: Breakpoints, p: SimpleNamespace) -> dict[str, object]:
+    return {
+        "temperature_current_limits": True,
+        "current_limit_temperature_points_c": [float(value) for value in p.current_limit_temps],
+        "charge_current_limit_pack_min_a": float(np.min(p.charge_current_limit_pack)),
+        "charge_current_limit_pack_max_a": float(np.max(p.charge_current_limit_pack)),
+        "discharge_current_limit_pack_min_a": float(np.min(p.discharge_current_limit_pack)),
+        "discharge_current_limit_pack_max_a": float(np.max(p.discharge_current_limit_pack)),
+        "effective_charge_current_max_a": float(p.I_charge_max),
+        "effective_discharge_current_max_a": float(p.I_discharge_max),
+        "pack_current_hardware_max_a": float(p.pack_current_hardware_max),
+        "breakpoint_charge_current_limit_a": [float(value) for value in bp.charge_current_limit],
+        "breakpoint_discharge_current_limit_a": [float(value) for value in bp.discharge_current_limit],
+    }
+
+
 def model_stats_from_gurobi_model(m, bp: Breakpoints, n_steps: int, p: SimpleNamespace, data: dict) -> dict[str, object]:
     vars_by_prefix: dict[str, int] = {}
     for var in m.getVars():
@@ -976,6 +1130,77 @@ def model_stats_from_gurobi_model(m, bp: Breakpoints, n_steps: int, p: SimpleNam
         "discrete_current_levels": int(getattr(p, "diag_discrete_current_levels", 0)),
         "discrete_current_c_max": float(getattr(p, "diag_discrete_current_c_max", 0.0)),
         "current_breakpoints_a": [float(x) for x in bp.current],
+        **current_limit_stats(bp, p),
+        "tight_temperature_bounds": bool(getattr(p, "diag_tight_temp_bounds", False)),
+        "temperature_bounds": temperature_bounds_snapshot(p),
+        "big_m_diagnostics": big_m_diagnostics(p, data),
+    }
+
+
+def model_stats_from_cplex_model(m, bp: Breakpoints, n_steps: int, p: SimpleNamespace, data: dict) -> dict[str, object]:
+    var_names = list(m.variables.get_names())
+    vars_by_prefix: dict[str, int] = {}
+    for name in var_names:
+        prefix = name.split("[", 1)[0]
+        vars_by_prefix[prefix] = vars_by_prefix.get(prefix, 0) + 1
+    var_types = list(m.variables.get_types())
+    binary_count = sum(1 for kind in var_types if str(kind).upper() == "B")
+    lam_count = sum(count for name, count in vars_by_prefix.items() if name.startswith("lam"))
+    w_count = sum(count for name, count in vars_by_prefix.items() if name.startswith("w"))
+    rho_count = sum(count for name, count in vars_by_prefix.items() if name.startswith("rho_i2"))
+    current_choice_count = sum(count for name, count in vars_by_prefix.items() if name.startswith("z_current"))
+    balance_slack_count = sum(count for name, count in vars_by_prefix.items() if name.startswith("P_balance_"))
+    thermal_binary_effective = int(math.ceil(n_steps / max(1, int(getattr(p, "diag_thermal_block", 1)))) * 4)
+    current_mode = str(getattr(p, "diag_current_mode", "continuous"))
+    try:
+        nonzeros = int(m.linear_constraints.get_num_nonzeros())
+    except Exception:
+        nonzeros = 0
+    return {
+        "solver_backend": "cplex_native",
+        "solver_name": "cplex",
+        "uses_cvxpy": False,
+        "native_sos2": True,
+        "sos2_formulation": "native_sos2",
+        "experiment": getattr(p, "diag_experiment", "baseline"),
+        "variables_total": int(m.variables.get_num()),
+        "binary_variables": int(binary_count),
+        "continuous_variables": int(m.variables.get_num() - binary_count),
+        "constraints_total": int(m.linear_constraints.get_num()),
+        "sos_constraints": int(m.SOS.get_num()),
+        "nonzeros": nonzeros,
+        "lam_variables_count": int(lam_count),
+        "pwl_weight_variables_count": int(w_count),
+        "rho_i2_variables_count": int(rho_count),
+        "pwl_sos_or_lam_variables_count": int(lam_count + w_count + rho_count),
+        "dg_ramp_constraints": 0,
+        "strict_power_balance": True,
+        "power_balance_slack_variables": int(balance_slack_count),
+        "per_time_step_binary_count": float(binary_count) / max(1, n_steps),
+        "thermal_binary_effective_count": thermal_binary_effective,
+        "thermal_binary_block_steps": int(getattr(p, "diag_thermal_block", 1)),
+        "steps": int(n_steps),
+        "dt_minutes": float(data["dt"]) / 60.0,
+        "breakpoints_soc": int(bp.n_s),
+        "soc_grid_width": float(np.min(np.diff(bp.soc))) if bp.n_s > 1 else 0.0,
+        "breakpoints_temp": int(bp.n_t),
+        "breakpoints_current": int(bp.n_i),
+        "current_segments": int(max(0, bp.n_i - 1)),
+        "current_mode": current_mode,
+        "discrete_current": current_mode == "discrete",
+        "current_discrete_variables": int(current_choice_count),
+        "perspective_i2r": bool(getattr(p, "diag_perspective_i2r", True)),
+        "strict_current_sos2": bool(getattr(p, "diag_strict_current_sos2", False)),
+        "perspective_mode": (
+            "discrete_current"
+            if current_mode == "discrete"
+            else ("strict_current_sos2" if getattr(p, "diag_strict_current_sos2", False) else "convex_hull")
+        ),
+        "legacy_discrete_current_grid_override": bool(getattr(p, "diag_discrete_current", False)),
+        "discrete_current_levels": int(getattr(p, "diag_discrete_current_levels", 0)),
+        "discrete_current_c_max": float(getattr(p, "diag_discrete_current_c_max", 0.0)),
+        "current_breakpoints_a": [float(x) for x in bp.current],
+        **current_limit_stats(bp, p),
         "tight_temperature_bounds": bool(getattr(p, "diag_tight_temp_bounds", False)),
         "temperature_bounds": temperature_bounds_snapshot(p),
         "big_m_diagnostics": big_m_diagnostics(p, data),
@@ -1059,336 +1284,6 @@ def solver_candidates(solver: str) -> list[tuple[str, str]]:
     return [resolve_solver_backend(requested)]
 
 
-def _interp_warm_series(
-    warm_result: dict,
-    key: str,
-    target_hours: np.ndarray,
-    default: float = 0.0,
-    *,
-    nearest: bool = False,
-) -> np.ndarray:
-    if key not in warm_result:
-        return np.full(len(target_hours), float(default), dtype=float)
-    source_hours = np.asarray(warm_result.get("hours", []), dtype=float)
-    values = np.asarray(warm_result[key], dtype=float)
-    if values.ndim == 0:
-        return np.full(len(target_hours), float(values), dtype=float)
-    values = values.reshape(-1)
-    if len(values) == 0:
-        return np.full(len(target_hours), float(default), dtype=float)
-    if len(source_hours) != len(values):
-        source_hours = np.linspace(float(target_hours[0]), float(target_hours[-1]), len(values))
-    if nearest:
-        idx = np.searchsorted(source_hours, target_hours, side="left")
-        idx = np.clip(idx, 0, len(source_hours) - 1)
-        left = np.maximum(0, idx - 1)
-        choose_left = np.abs(target_hours - source_hours[left]) <= np.abs(target_hours - source_hours[idx])
-        idx = np.where(choose_left, left, idx)
-        return values[idx]
-    return np.interp(target_hours, source_hours, values, left=values[0], right=values[-1])
-
-
-def _interp_warm_unit_series(
-    warm_result: dict,
-    key: str,
-    unit_index: int,
-    target_hours: np.ndarray,
-    default: float = 0.0,
-    *,
-    nearest: bool = False,
-) -> np.ndarray:
-    if key not in warm_result:
-        return np.full(len(target_hours), float(default), dtype=float)
-    values = np.asarray(warm_result[key], dtype=float)
-    if values.ndim < 2 or unit_index >= values.shape[0]:
-        return np.full(len(target_hours), float(default), dtype=float)
-    source_hours = np.asarray(warm_result.get("hours", []), dtype=float)
-    series = values[unit_index].reshape(-1)
-    if len(source_hours) != len(series):
-        source_hours = np.linspace(float(target_hours[0]), float(target_hours[-1]), len(series))
-    if nearest:
-        idx = np.searchsorted(source_hours, target_hours, side="left")
-        idx = np.clip(idx, 0, len(source_hours) - 1)
-        left = np.maximum(0, idx - 1)
-        choose_left = np.abs(target_hours - source_hours[left]) <= np.abs(target_hours - source_hours[idx])
-        idx = np.where(choose_left, left, idx)
-        return series[idx]
-    return np.interp(target_hours, source_hours, series, left=series[0], right=series[-1])
-
-
-def _binary_series(values: np.ndarray) -> np.ndarray:
-    return (np.asarray(values, dtype=float) >= 0.5).astype(float)
-
-
-def build_solver_warm_start_values(
-    p: SimpleNamespace,
-    data: dict[str, np.ndarray | float | int],
-    bp: Breakpoints,
-    warm_result: dict | None,
-) -> dict[str, float]:
-    if not warm_result or not warm_result.get("success"):
-        return {}
-    n = int(data["N"])
-    target_hours = np.asarray(data["hours"], dtype=float)
-    current_mode = str(getattr(p, "diag_current_mode", "continuous"))
-    values: dict[str, float] = {}
-
-    def put(name: str, value: float, lb: float | None = None, ub: float | None = None) -> None:
-        val = float(value)
-        if lb is not None:
-            val = max(float(lb), val)
-        if ub is not None:
-            val = min(float(ub), val)
-        if math.isfinite(val):
-            values[name] = val
-
-    soc = _interp_warm_series(warm_result, "SOC", target_hours, p.SOC_init)
-    ibat = _interp_warm_series(warm_result, "I_bat", target_hours, 0.0)
-    tbat = _interp_warm_series(warm_result, "T_bat", target_hours, p.T_bat_init)
-    ttank = _interp_warm_series(warm_result, "T_tank", target_hours, p.T_tank_init)
-    tcont = _interp_warm_series(warm_result, "T_cont", target_hours, p.T_cont_init)
-    pbess = _interp_warm_series(warm_result, "P_BESS", target_hours, 0.0)
-    pdc = _interp_warm_series(warm_result, "P_dc_pack", target_hours, 0.0)
-    pdc_abs = _interp_warm_series(warm_result, "P_dc_abs", target_hours, 0.0)
-    qgen = _interp_warm_series(warm_result, "Q_gen_pack", target_hours, 0.0)
-    q_bt = _interp_warm_series(warm_result, "Q_bt", target_hours, 0.0)
-    q_tamb = _interp_warm_series(warm_result, "Q_tamb", target_hours, 0.0)
-    q_tamb_dump = _interp_warm_series(warm_result, "Q_tamb_dump", target_hours, 0.0)
-    pv_use = _interp_warm_series(warm_result, "pv_use_kw", target_hours, 0.0) * 1000.0
-    pv_curt = _interp_warm_series(warm_result, "pv_curt_kw", target_hours, 0.0) * 1000.0
-    wt_use = _interp_warm_series(warm_result, "wt_use_kw", target_hours, 0.0) * 1000.0
-    wt_curt = _interp_warm_series(warm_result, "wt_curt_kw", target_hours, 0.0) * 1000.0
-    u_pi = _binary_series(_interp_warm_series(warm_result, "u_pi", target_hours, 0.0, nearest=True))
-    u_po = _binary_series(_interp_warm_series(warm_result, "u_po", target_hours, 0.0, nearest=True))
-    u_lh = _binary_series(_interp_warm_series(warm_result, "u_lh", target_hours, 0.0, nearest=True))
-    u_ch = _binary_series(_interp_warm_series(warm_result, "u_ch", target_hours, 0.0, nearest=True))
-
-    for t in range(n):
-        put(f"SOC[{t}]", soc[t], p.SOC_min, p.SOC_max)
-        put(f"I_bat[{t}]", ibat[t], -p.I_charge_max, p.I_discharge_max)
-        put(f"T_bat[{t}]", tbat[t], p.T_bat_min, p.T_bat_max)
-        put(f"T_tank[{t}]", ttank[t], p.T_tank_min, p.T_tank_max)
-        put(f"T_cont[{t}]", tcont[t], p.T_cont_min, p.T_cont_max)
-        put(f"P_BESS[{t}]", pbess[t], -350e3, 350e3)
-        put(f"P_dc_pack[{t}]", pdc[t])
-        put(f"P_dc_abs[{t}]", abs(pdc_abs[t]))
-        put(f"Q_gen_pack[{t}]", max(0.0, qgen[t]))
-        put(f"Q_bt[{t}]", q_bt[t])
-        put(f"Q_tamb[{t}]", q_tamb[t])
-        put(f"Q_tamb_dump[{t}]", max(0.0, q_tamb_dump[t]))
-        put(f"v_bt[{t}]", 0.0)
-        put(f"v_ta[{t}]", 0.0)
-        put(f"P_pv_use[{t}]", pv_use[t], 0.0, float(data["P_pv"][t]))
-        put(f"P_pv_curt[{t}]", pv_curt[t], 0.0, float(data["P_pv"][t]))
-        put(f"P_wt_use[{t}]", wt_use[t], 0.0, float(data["P_wt"][t]))
-        put(f"P_wt_curt[{t}]", wt_curt[t], 0.0, float(data["P_wt"][t]))
-        for name, arr in [("u_pi", u_pi), ("u_po", u_po), ("u_lh", u_lh), ("u_ch", u_ch)]:
-            put(f"{name}[{t}]", arr[t], 0.0, 1.0)
-        put(f"tank_preheat_short[{t}]", max(0.0, p.T_tank_target - ttank[t]))
-        put(f"cont_preheat_short[{t}]", max(0.0, p.T_cont_target - tcont[t]))
-        put(f"bat_low_dev[{t}]", max(0.0, p.T_bat_pref_low - tbat[t]))
-        put(f"bat_high_dev[{t}]", max(0.0, tbat[t] - p.T_bat_pref_high))
-        put(f"tank_low_dev[{t}]", max(0.0, p.T_tank_band_low - ttank[t]))
-        put(f"tank_high_dev[{t}]", max(0.0, ttank[t] - p.T_tank_band_high))
-        put(f"tank_hot_dev[{t}]", max(0.0, ttank[t] - p.T_tank_hot))
-        put(f"cont_low_dev[{t}]", max(0.0, p.T_cont_band_low - tcont[t]))
-        put(f"cont_high_dev[{t}]", max(0.0, tcont[t] - p.T_cont_band_high))
-        put(f"cont_hot_dev[{t}]", max(0.0, tcont[t] - p.T_cont_hot))
-
-        s_weights = interp_weights(float(np.clip(soc[t], p.SOC_min, p.SOC_max)), bp.soc)
-        t_weights = interp_weights(float(np.clip(tbat[t], p.T_bat_min, p.T_bat_max)), bp.temp)
-        for a in range(bp.n_s):
-            put(f"lam_s[{t},{a}]", 0.0, 0.0, 1.0)
-        for b in range(bp.n_t):
-            put(f"lam_t[{t},{b}]", 0.0, 0.0, 1.0)
-        for a, w in s_weights:
-            put(f"lam_s[{t},{a}]", w, 0.0, 1.0)
-        for b, w in t_weights:
-            put(f"lam_t[{t},{b}]", w, 0.0, 1.0)
-        w_st_lookup = {}
-        for a in range(bp.n_s):
-            for b in range(bp.n_t):
-                w_st_lookup[a, b] = 0.0
-                put(f"w_st[{t},{a},{b}]", 0.0, 0.0, 1.0)
-                for c in range(bp.n_i):
-                    put(f"rho_i2[{t},{a},{b},{c}]", 0.0, 0.0, 1.0)
-        for a, sw in s_weights:
-            for b, tw in t_weights:
-                w_val = float(sw * tw)
-                w_st_lookup[a, b] = w_val
-                put(f"w_st[{t},{a},{b}]", w_val, 0.0, 1.0)
-        if current_mode == "discrete":
-            current_idx = int(np.argmin(np.abs(bp.current - float(ibat[t]))))
-            for c in range(bp.n_i):
-                put(f"z_current[{t},{c}]", 1.0 if c == current_idx else 0.0, 0.0, 1.0)
-            current_weights = [(current_idx, 1.0)]
-        else:
-            current_weights = interp_weights(float(np.clip(ibat[t], -p.I_charge_max, p.I_discharge_max)), bp.current)
-        for (a, b), w_val in w_st_lookup.items():
-            if w_val <= 0.0:
-                continue
-            for c, cw in current_weights:
-                put(f"rho_i2[{t},{a},{b},{c}]", w_val * cw, 0.0, 1.0)
-
-    for t in range(max(0, n - 1)):
-        put(f"u_pi_change[{t}]", abs(u_pi[t + 1] - u_pi[t]), 0.0, 1.0)
-        put(f"u_po_change[{t}]", abs(u_po[t + 1] - u_po[t]), 0.0, 1.0)
-        put(f"u_lh_change[{t}]", abs(u_lh[t + 1] - u_lh[t]), 0.0, 1.0)
-        put(f"u_ch_change[{t}]", abs(u_ch[t + 1] - u_ch[t]), 0.0, 1.0)
-        put(f"tank_temp_step[{t}]", abs(ttank[t + 1] - ttank[t]), 0.0, p.T_tank_max - p.T_tank_min)
-        put(f"cont_temp_step[{t}]", abs(tcont[t + 1] - tcont[t]), 0.0, p.T_cont_max - p.T_cont_min)
-
-    for g, unit in enumerate(p.diesel_units):
-        p_dg_series = _interp_warm_unit_series(warm_result, "P_dg_units", g, target_hours, 0.0)
-        m_dg_series = _interp_warm_unit_series(warm_result, "M_dg_units", g, target_hours, 0.0)
-        u_dg_series = _binary_series(_interp_warm_unit_series(warm_result, "u_dg", g, target_hours, 0.0, nearest=True))
-        for t in range(n):
-            p_val = float(np.clip(p_dg_series[t], 0.0, float(unit["p_max_w"])))
-            m_val = float(np.clip(m_dg_series[t], 0.0, float(np.max(unit["fuel_kg_h"]))))
-            on = float(u_dg_series[t])
-            put(f"P_dg[{g},{t}]", p_val, 0.0, float(unit["p_max_w"]))
-            put(f"M_dg[{g},{t}]", m_val, 0.0, float(np.max(unit["fuel_kg_h"])))
-            put(f"u_dg[{g},{t}]", on, 0.0, 1.0)
-            put(f"P_dg_{g+1}_{t}", p_val, 0.0, float(unit["p_max_w"]))
-            put(f"M_dg_{g+1}_{t}", m_val, 0.0, float(np.max(unit["fuel_kg_h"])))
-            put(f"u_dg_{g+1}_{t}", on, 0.0, 1.0)
-            weights = interp_weights(p_val, np.asarray(unit["powers_w"], dtype=float)) if on >= 0.5 else []
-            for k in range(len(unit["powers_w"])):
-                put(f"lam_dg[{g},{t},{k}]", 0.0, 0.0, 1.0)
-                put(f"lam_dg_{g+1}_{t}_{k}", 0.0, 0.0, 1.0)
-            for k, weight in weights:
-                put(f"lam_dg[{g},{t},{k}]", weight, 0.0, 1.0)
-                put(f"lam_dg_{g+1}_{t}_{k}", weight, 0.0, 1.0)
-
-    put("SOC_end", float(warm_result.get("SOC_end", soc[-1])), p.SOC_min, p.SOC_max)
-    put("soc_dev", abs(float(warm_result.get("SOC_end", soc[-1])) - 0.5), 0.0, 0.5)
-    put("T_bat_end", float(warm_result.get("T_bat_end", tbat[-1])), p.T_bat_min, p.T_bat_max)
-    put("T_tank_end", float(warm_result.get("T_tank_end", ttank[-1])), p.T_tank_min, p.T_tank_max)
-    put("T_cont_end", float(warm_result.get("T_cont_end", tcont[-1])), p.T_cont_min, p.T_cont_max)
-    put("tank_terminal_short", max(0.0, p.T_tank_terminal_min - float(warm_result.get("T_tank_end", ttank[-1]))))
-    put("cont_terminal_short", max(0.0, p.T_cont_terminal_min - float(warm_result.get("T_cont_end", tcont[-1]))))
-    return values
-
-
-def is_integer_control_warm_start_name(name: str) -> bool:
-    prefix = name.split("[", 1)[0]
-    if prefix in {"u_pi", "u_po", "u_lh", "u_ch", "u_dg", "z_current"}:
-        return True
-    return name.startswith("u_dg_")
-
-
-def filter_solver_warm_start_values(
-    values: dict[str, float],
-    *,
-    integer_controls_only: bool = False,
-) -> dict[str, float]:
-    if not integer_controls_only:
-        return dict(values)
-    return {name: value for name, value in values.items() if is_integer_control_warm_start_name(name)}
-
-
-def warm_start_summary(warm_result: dict | None, start_variable_count: int = 0) -> dict[str, object]:
-    if not warm_result:
-        return {"enabled": False, "used": False}
-    return {
-        "enabled": True,
-        "used": bool(warm_result.get("success")) and start_variable_count > 0,
-        "status": warm_result.get("status"),
-        "objective": warm_result.get("objective"),
-        "fuel_kg": warm_result.get("fuel_kg"),
-        "gap": warm_result.get("gap"),
-        "time_s": warm_result.get("time_s"),
-        "start_variables": int(start_variable_count),
-        "dt_minutes": float(warm_result.get("dt_s", 3600.0)) / 60.0 if warm_result.get("dt_s") is not None else None,
-        "soc_grid_width": warm_result.get("warm_start_soc_grid_width"),
-        "current_segments": warm_result.get("warm_start_current_segments"),
-    }
-
-
-def compact_coarse_warm_start_result(warm_result: dict | None) -> dict[str, object]:
-    if not warm_result:
-        return {"enabled": False, "success": False, "used_for_main_solve": False}
-    return {
-        "enabled": True,
-        "success": bool(warm_result.get("success")),
-        "used_for_main_solve": bool(warm_result.get("success")),
-        "status": warm_result.get("status"),
-        "objective": warm_result.get("objective"),
-        "fuel_kg": warm_result.get("fuel_kg"),
-        "gap": warm_result.get("gap"),
-        "time_s": warm_result.get("time_s"),
-        "dt_minutes": warm_result.get("warm_start_dt_minutes"),
-        "soc_grid_width": warm_result.get("warm_start_soc_grid_width"),
-        "current_segments": warm_result.get("warm_start_current_segments"),
-        "mip_gap_target": warm_result.get("warm_start_mip_gap"),
-        "time_limit": warm_result.get("warm_start_time_limit"),
-        "solver_backend": warm_result.get("warm_start_solver_backend"),
-        "horizon": warm_result.get("warm_start_horizon"),
-        "message": warm_result.get("message"),
-    }
-
-
-def model_stats_from_cplex_model(m, bp: Breakpoints, n_steps: int, p: SimpleNamespace, data: dict) -> dict[str, object]:
-    names = m.variables.get_names()
-    vars_by_prefix: dict[str, int] = {}
-    for name in names:
-        prefix = name.split("[", 1)[0]
-        vars_by_prefix[prefix] = vars_by_prefix.get(prefix, 0) + 1
-    lam_count = sum(count for name, count in vars_by_prefix.items() if name.startswith("lam"))
-    w_count = sum(count for name, count in vars_by_prefix.items() if name.startswith("w"))
-    rho_count = sum(count for name, count in vars_by_prefix.items() if name.startswith("rho_i2"))
-    current_choice_count = sum(count for name, count in vars_by_prefix.items() if name.startswith("z_current"))
-    balance_slack_count = sum(count for name, count in vars_by_prefix.items() if name.startswith("P_balance_"))
-    binary_count = int(m.variables.get_num_binary())
-    current_mode = str(getattr(p, "diag_current_mode", "continuous"))
-    return {
-        "solver_backend": "cplex_native",
-        "solver_name": "cplex",
-        "native_sos2": True,
-        "experiment": getattr(p, "diag_experiment", "baseline"),
-        "variables_total": int(m.variables.get_num()),
-        "binary_variables": binary_count,
-        "continuous_variables": int(m.variables.get_num() - binary_count),
-        "constraints_total": int(m.linear_constraints.get_num()),
-        "sos_constraints": int(m.SOS.get_num()),
-        "nonzeros": int(m.linear_constraints.get_num_nonzeros()),
-        "lam_variables_count": int(lam_count),
-        "pwl_weight_variables_count": int(w_count),
-        "rho_i2_variables_count": int(rho_count),
-        "pwl_sos_or_lam_variables_count": int(lam_count + w_count + rho_count),
-        "dg_ramp_constraints": 0,
-        "strict_power_balance": True,
-        "power_balance_slack_variables": int(balance_slack_count),
-        "per_time_step_binary_count": float(binary_count) / max(1, n_steps),
-        "thermal_binary_effective_count": int(n_steps * 4),
-        "thermal_binary_block_steps": 1,
-        "steps": int(n_steps),
-        "dt_minutes": float(data["dt"]) / 60.0,
-        "breakpoints_soc": int(bp.n_s),
-        "soc_grid_width": float(np.min(np.diff(bp.soc))) if bp.n_s > 1 else 0.0,
-        "breakpoints_temp": int(bp.n_t),
-        "breakpoints_current": int(bp.n_i),
-        "current_segments": int(max(0, bp.n_i - 1)),
-        "current_mode": current_mode,
-        "discrete_current": current_mode == "discrete",
-        "current_discrete_variables": int(current_choice_count),
-        "perspective_i2r": bool(getattr(p, "diag_perspective_i2r", True)),
-        "strict_current_sos2": bool(getattr(p, "diag_strict_current_sos2", False)),
-        "perspective_mode": (
-            "discrete_current"
-            if current_mode == "discrete"
-            else ("native_strict_current_sos2" if getattr(p, "diag_strict_current_sos2", False) else "native_convex_hull")
-        ),
-        "legacy_discrete_current_grid_override": bool(getattr(p, "diag_discrete_current", False)),
-        "discrete_current_levels": int(getattr(p, "diag_discrete_current_levels", 0)),
-        "discrete_current_c_max": float(getattr(p, "diag_discrete_current_c_max", 0.0)),
-        "current_breakpoints_a": [float(x) for x in bp.current],
-        "tight_temperature_bounds": bool(getattr(p, "diag_tight_temp_bounds", False)),
-        "temperature_bounds": temperature_bounds_snapshot(p),
-        "big_m_diagnostics": big_m_diagnostics(p, data),
-    }
-
-
 def solve_milp_cplex_native(
     p: SimpleNamespace,
     data: dict[str, np.ndarray | float | int],
@@ -1396,7 +1291,6 @@ def solve_milp_cplex_native(
     time_limit: float,
     mip_gap: float,
     build_only: bool = False,
-    warm_start_solution: dict | None = None,
 ) -> dict:
     try:
         import cplex
@@ -1605,6 +1499,18 @@ def solve_milp_cplex_native(
         add_sos2([lam_t[t, b] for b in range(n_t)], f"sos_lam_t_{t}")
         add_constr([(SOC[t], 1.0)] + [(lam_s[t, a], -float(bp.soc[a])) for a in range(n_s)], "E", 0.0, f"soc_map_{t}")
         add_constr([(T_bat[t], 1.0)] + [(lam_t[t, b], -float(bp.temp[b])) for b in range(n_t)], "E", 0.0, f"tbat_map_{t}")
+        add_constr(
+            [(I_bat[t], 1.0)] + [(lam_t[t, b], float(bp.charge_current_limit[b])) for b in range(n_t)],
+            "G",
+            0.0,
+            f"ibat_charge_temp_limit_{t}",
+        )
+        add_constr(
+            [(I_bat[t], 1.0)] + [(lam_t[t, b], -float(bp.discharge_current_limit[b])) for b in range(n_t)],
+            "L",
+            0.0,
+            f"ibat_discharge_temp_limit_{t}",
+        )
         for a in range(n_s):
             add_constr([(w_st[t, a, b], 1.0) for b in range(n_t)] + [(lam_s[t, a], -1.0)], "E", 0.0, f"w_st_s_{t}_{a}")
         for b in range(n_t):
@@ -1831,32 +1737,7 @@ def solve_milp_cplex_native(
     add_constr([(cont_terminal_short, 1.0), (T_cont_end, 1.0)], "G", p.T_cont_terminal_min, "cont_terminal_short")
 
     m.linear_constraints.add(lin_expr=lin_exprs, senses="".join(senses), rhs=rhs_values, names=row_names)
-    warm_start_count = 0
-    if warm_start_solution and warm_start_solution.get("success"):
-        warm_values = filter_solver_warm_start_values(
-            build_solver_warm_start_values(p, data, bp, warm_start_solution),
-            integer_controls_only=True,
-        )
-        valid_names = set(m.variables.get_names())
-        start_names = []
-        start_values = []
-        for name, value in warm_values.items():
-            if name in valid_names:
-                start_names.append(name)
-                start_values.append(float(value))
-        if start_names:
-            try:
-                m.MIP_starts.add(
-                    SparsePair(ind=start_names, val=start_values),
-                    m.MIP_starts.effort_level.repair,
-                    "coarse_warm_start",
-                )
-                warm_start_count = len(start_names)
-            except Exception as exc:
-                print(f"Warning: failed to add CPLEX coarse warm start: {exc}")
     model_stats = model_stats_from_cplex_model(m, bp, n, p, data)
-    model_stats["coarse_warm_start"] = warm_start_summary(warm_start_solution, warm_start_count)
-    model_stats["coarse_warm_start"]["start_strategy"] = "integer_controls"
     if getattr(p, "diag_model_stats_json", None):
         Path(p.diag_model_stats_json).parent.mkdir(parents=True, exist_ok=True)
         Path(p.diag_model_stats_json).write_text(json.dumps(model_stats, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -2110,6 +1991,7 @@ def model_stats_from_mosek_task(
         "discrete_current_levels": int(getattr(p, "diag_discrete_current_levels", 0)),
         "discrete_current_c_max": float(getattr(p, "diag_discrete_current_c_max", 0.0)),
         "current_breakpoints_a": [float(x) for x in bp.current],
+        **current_limit_stats(bp, p),
         "tight_temperature_bounds": bool(getattr(p, "diag_tight_temp_bounds", False)),
         "temperature_bounds": temperature_bounds_snapshot(p),
         "big_m_diagnostics": big_m_diagnostics(p, data),
@@ -2123,7 +2005,6 @@ def solve_milp_mosek_native(
     time_limit: float,
     mip_gap: float,
     build_only: bool = False,
-    warm_start_solution: dict | None = None,
 ) -> dict:
     try:
         import mosek
@@ -2367,6 +2248,18 @@ def solve_milp_mosek_native(
         add_sos2_binary([lam_t[t, b] for b in range(n_t)], 1.0, f"t_{t}")
         add_constr([(SOC[t], 1.0)] + [(lam_s[t, a], -float(bp.soc[a])) for a in range(n_s)], "E", 0.0, f"soc_map_{t}")
         add_constr([(T_bat[t], 1.0)] + [(lam_t[t, b], -float(bp.temp[b])) for b in range(n_t)], "E", 0.0, f"tbat_map_{t}")
+        add_constr(
+            [(I_bat[t], 1.0)] + [(lam_t[t, b], float(bp.charge_current_limit[b])) for b in range(n_t)],
+            "G",
+            0.0,
+            f"ibat_charge_temp_limit_{t}",
+        )
+        add_constr(
+            [(I_bat[t], 1.0)] + [(lam_t[t, b], -float(bp.discharge_current_limit[b])) for b in range(n_t)],
+            "L",
+            0.0,
+            f"ibat_discharge_temp_limit_{t}",
+        )
         for a in range(n_s):
             add_constr([(w_st[t, a, b], 1.0) for b in range(n_t)] + [(lam_s[t, a], -1.0)], "E", 0.0, f"w_st_s_{t}_{a}")
         for b in range(n_t):
@@ -2599,38 +2492,7 @@ def solve_milp_mosek_native(
         except Exception:
             pass
 
-    warm_start_count = 0
-    if warm_start_solution and warm_start_solution.get("success"):
-        warm_values = build_solver_warm_start_values(p, data, bp, warm_start_solution)
-        name_to_idx = {name: idx for idx, name in enumerate(var_names)}
-        start_vector = []
-        for lb, ub in zip(var_lbs, var_ubs):
-            default = 0.0
-            if lb > -0.5 * inf:
-                default = max(default, lb)
-            if ub < 0.5 * inf:
-                default = min(default, ub)
-            start_vector.append(float(default))
-        for name, value in warm_values.items():
-            idx = name_to_idx.get(name)
-            if idx is None:
-                continue
-            val = float(value)
-            if var_lbs[idx] > -0.5 * inf:
-                val = max(val, var_lbs[idx])
-            if var_ubs[idx] < 0.5 * inf:
-                val = min(val, var_ubs[idx])
-            start_vector[idx] = val
-            warm_start_count += 1
-        if warm_start_count:
-            try:
-                task.putxx(mosek.soltype.itg, start_vector)
-            except Exception as exc:
-                print(f"Warning: failed to add MOSEK coarse warm start: {exc}")
-                warm_start_count = 0
     model_stats = model_stats_from_mosek_task(task, var_names, bp, n, p, data)
-    model_stats["coarse_warm_start"] = warm_start_summary(warm_start_solution, warm_start_count)
-    model_stats["coarse_warm_start"]["start_strategy"] = "full_values"
     if getattr(p, "diag_model_stats_json", None):
         Path(p.diag_model_stats_json).parent.mkdir(parents=True, exist_ok=True)
         Path(p.diag_model_stats_json).write_text(json.dumps(model_stats, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -2833,7 +2695,6 @@ def solve_milp(
     mip_gap: float,
     feasibility_focus: bool = True,
     build_only: bool = False,
-    warm_start_solution: dict | None = None,
 ) -> dict:
     import gurobipy as gp
     from gurobipy import GRB
@@ -2984,6 +2845,14 @@ def solve_milp(
 
         m.addConstr(SOC[t] == sum(lam_s[t, a] * bp.soc[a] for a in range(n_s)), name=f"soc_map_{t}")
         m.addConstr(T_bat[t] == sum(lam_t[t, b] * bp.temp[b] for b in range(n_t)), name=f"tbat_map_{t}")
+        m.addConstr(
+            I_bat[t] + gp.quicksum(bp.charge_current_limit[b] * lam_t[t, b] for b in range(n_t)) >= 0.0,
+            name=f"ibat_charge_temp_limit_{t}",
+        )
+        m.addConstr(
+            I_bat[t] - gp.quicksum(bp.discharge_current_limit[b] * lam_t[t, b] for b in range(n_t)) <= 0.0,
+            name=f"ibat_discharge_temp_limit_{t}",
+        )
         for a in range(n_s):
             m.addConstr(
                 sum(w_st[t, a, b] for b in range(n_t)) == lam_s[t, a],
@@ -3242,16 +3111,7 @@ def solve_milp(
     )
 
     m.update()
-    warm_start_count = 0
-    if warm_start_solution and warm_start_solution.get("success"):
-        warm_values = build_solver_warm_start_values(p, data, bp, warm_start_solution)
-        for var in m.getVars():
-            if var.VarName in warm_values:
-                set_var_start(var, warm_values[var.VarName])
-                warm_start_count += 1
     model_stats = model_stats_from_gurobi_model(m, bp, n, p, data)
-    model_stats["coarse_warm_start"] = warm_start_summary(warm_start_solution, warm_start_count)
-    model_stats["coarse_warm_start"]["start_strategy"] = "full_values"
     if getattr(p, "diag_model_stats_json", None):
         Path(p.diag_model_stats_json).parent.mkdir(parents=True, exist_ok=True)
         Path(p.diag_model_stats_json).write_text(
@@ -3709,6 +3569,22 @@ def compute_checks(p: SimpleNamespace, result: dict) -> dict:
     pbess_deviation_max_kw = float(np.max(p_error_kw))
     pbess_deviation_avg_kw = float(np.mean(p_error_kw))
     physical_balance_deviation_max_kw = float(np.max(np.abs(physical_balance_kw)))
+    charge_limit_at_t = np.interp(
+        tbat,
+        p.current_limit_temps,
+        p.charge_current_limit_pack,
+        left=p.charge_current_limit_pack[0],
+        right=p.charge_current_limit_pack[-1],
+    )
+    discharge_limit_at_t = np.interp(
+        tbat,
+        p.current_limit_temps,
+        p.discharge_current_limit_pack,
+        left=p.discharge_current_limit_pack[0],
+        right=p.discharge_current_limit_pack[-1],
+    )
+    charge_current_violation = np.maximum(-ibat - charge_limit_at_t, 0.0)
+    discharge_current_violation = np.maximum(ibat - discharge_limit_at_t, 0.0)
     return {
         "r0_max_mohm": float(np.max(r0_error) * 1000.0),
         "r0_avg_mohm": float(np.mean(r0_error) * 1000.0),
@@ -3728,6 +3604,12 @@ def compute_checks(p: SimpleNamespace, result: dict) -> dict:
         "soc_max": float(np.max(soc_for_bounds)),
         "i_pack_min_a": float(np.min(result["I_bat"])),
         "i_pack_max_a": float(np.max(result["I_bat"])),
+        "charge_current_limit_min_a": float(np.min(charge_limit_at_t)),
+        "charge_current_limit_max_a": float(np.max(charge_limit_at_t)),
+        "discharge_current_limit_min_a": float(np.min(discharge_limit_at_t)),
+        "discharge_current_limit_max_a": float(np.max(discharge_limit_at_t)),
+        "charge_current_limit_violation_max_a": float(np.max(charge_current_violation)),
+        "discharge_current_limit_violation_max_a": float(np.max(discharge_current_violation)),
         "tbat_min_c": float(np.min(result["T_bat"])),
         "tbat_max_c": float(np.max(result["T_bat"])),
         "ttank_min_c": float(np.min(result["T_tank"])),
@@ -4130,6 +4012,267 @@ def write_detailed_results_workbook(p: SimpleNamespace, result: dict, path: Path
     return path
 
 
+RESULT_SERIES_META: dict[str, tuple[str, str]] = {
+    "wind_m_s": ("风速", "m/s"),
+    "solar_w_m2": ("太阳辐照度", "W/m2"),
+    "T_amb": ("环境温度", "℃"),
+    "load_kw": ("负荷功率", "kW"),
+    "pv_kw": ("光伏可用功率", "kW"),
+    "wt_kw": ("风电可用功率", "kW"),
+    "I_bat": ("电池包电流", "A"),
+    "SOC": ("SOC", ""),
+    "T_bat": ("电芯温度", "℃"),
+    "T_tank": ("液冷罐温度", "℃"),
+    "T_cont": ("舱体温度", "℃"),
+    "P_BESS": ("BESS并网端口功率", "W"),
+    "P_dg": ("柴油机总功率", "W"),
+    "M_dg": ("柴油消耗率", "kg/h"),
+    "P_dg_units": ("柴油机单机功率", "W"),
+    "M_dg_units": ("柴油机单机油耗率", "kg/h"),
+    "u_dg": ("柴油机启停状态", ""),
+    "R0": ("电池包等效内阻", "Ω"),
+    "P_dc_pack": ("电池包直流功率", "W"),
+    "P_dc_abs": ("电池包直流功率绝对值", "W"),
+    "Q_gen_pack": ("电池包产热功率", "W"),
+    "pv_use_kw": ("光伏利用功率", "kW"),
+    "wt_use_kw": ("风电利用功率", "kW"),
+    "pv_curt_kw": ("弃光功率", "kW"),
+    "wt_curt_kw": ("弃风功率", "kW"),
+    "u_pi": ("内循环泵启停状态", ""),
+    "u_po": ("外循环泵启停状态", ""),
+    "u_lh": ("液冷加热启停状态", ""),
+    "u_ch": ("舱体加热启停状态", ""),
+    "Q_bt": ("电池侧换热功率", "W"),
+    "Q_tamb": ("环境侧换热功率", "W"),
+    "Q_tamb_dump": ("对环境散热功率", "W"),
+    "renewable_surplus_kw": ("风光富余功率", "kW"),
+    "renewable_surplus_weight": ("风光富余权重", ""),
+    "tank_storage_from_amb_kwh_th": ("液冷罐相对环境储热量", "kWh_th"),
+    "cont_storage_from_amb_kwh_th": ("舱体相对环境储热量", "kWh_th"),
+    "tank_storage_over_target_kwh_th": ("液冷罐高于目标储热量", "kWh_th"),
+    "cont_storage_over_target_kwh_th": ("舱体高于目标储热量", "kWh_th"),
+    "tank_useful_storage_kwh_th": ("液冷罐可用储热量", "kWh_th"),
+    "cont_useful_storage_kwh_th": ("舱体可用储热量", "kWh_th"),
+    "heat_dump_kw_th": ("散热功率", "kW_th"),
+    "q_bc_w": ("电池-舱体换热功率", "W"),
+    "q_tc_w": ("液冷罐-舱体换热功率", "W"),
+    "q_camb_w": ("舱体-环境换热功率", "W"),
+    "P_heat_liquid_w": ("液冷电加热功率", "W"),
+    "P_heat_cont_w": ("舱体电加热功率", "W"),
+    "P_pump_in_w": ("内循环泵功率", "W"),
+    "P_pump_out_w": ("外循环泵功率", "W"),
+}
+
+RESULT_SERIES_SKIP_KEYS = {"hours", "bp_soc", "bp_temp", "bp_r0", "bp_current"}
+
+
+def _json_number(value) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, np.generic):
+        value = value.item()
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _series_label_and_unit(source_key: str, display_key: str, index: int | None = None) -> tuple[str, str]:
+    label, unit = RESULT_SERIES_META.get(source_key, (source_key, ""))
+    if index is not None:
+        label = f"{label} {index + 1}"
+    if display_key.endswith("_kw") and not unit:
+        unit = "kW"
+    elif display_key.endswith("_w") and not unit:
+        unit = "W"
+    elif display_key.endswith("_c") and not unit:
+        unit = "℃"
+    return label, unit
+
+
+def _values_for_result_series(values, n: int) -> list[float | None]:
+    arr = np.asarray(values, dtype=float).reshape(-1)
+    if arr.size >= n:
+        arr = arr[:n]
+    elif arr.size == n - 1 and n > 0:
+        arr = np.concatenate([arr, np.asarray([np.nan], dtype=float)])
+    elif arr.size < n:
+        arr = np.concatenate([arr, np.full(n - arr.size, np.nan, dtype=float)])
+    return [_json_number(value) for value in arr]
+
+
+def _series_summary(values: list[float | None]) -> dict[str, float | int | None]:
+    valid = np.asarray([value for value in values if value is not None], dtype=float)
+    if valid.size == 0:
+        return {"min": None, "max": None, "avg": None, "point_count": 0}
+    return {
+        "min": float(np.min(valid)),
+        "max": float(np.max(valid)),
+        "avg": float(np.mean(valid)),
+        "point_count": int(valid.size),
+    }
+
+
+def collect_result_series(result: dict, n: int, max_components: int = 32) -> list[dict[str, object]]:
+    series: list[dict[str, object]] = []
+    used_keys: set[str] = set()
+    for key, raw_value in result.items():
+        if key in RESULT_SERIES_SKIP_KEYS:
+            continue
+        try:
+            arr = np.asarray(raw_value, dtype=float)
+        except (TypeError, ValueError):
+            continue
+        if arr.ndim == 1 and arr.size in {n, max(0, n - 1)}:
+            display_key = str(key)
+            label, unit = _series_label_and_unit(str(key), display_key)
+            values = _values_for_result_series(arr, n)
+            series.append(
+                {
+                    "key": display_key,
+                    "source_key": str(key),
+                    "label": label,
+                    "unit": unit,
+                    "values": values,
+                    **_series_summary(values),
+                }
+            )
+            used_keys.add(display_key)
+        elif arr.ndim == 2:
+            source_key = str(key)
+            if arr.shape[1] in {n, max(0, n - 1)} and 0 < arr.shape[0] <= max_components:
+                for index in range(arr.shape[0]):
+                    display_key = f"{source_key}_{index + 1}"
+                    if display_key in used_keys:
+                        continue
+                    label, unit = _series_label_and_unit(source_key, display_key, index)
+                    values = _values_for_result_series(arr[index, :], n)
+                    series.append(
+                        {
+                            "key": display_key,
+                            "source_key": source_key,
+                            "label": label,
+                            "unit": unit,
+                            "values": values,
+                            **_series_summary(values),
+                        }
+                    )
+                    used_keys.add(display_key)
+            elif arr.shape[0] in {n, max(0, n - 1)} and 0 < arr.shape[1] <= max_components:
+                for index in range(arr.shape[1]):
+                    display_key = f"{source_key}_{index + 1}"
+                    if display_key in used_keys:
+                        continue
+                    label, unit = _series_label_and_unit(source_key, display_key, index)
+                    values = _values_for_result_series(arr[:, index], n)
+                    series.append(
+                        {
+                            "key": display_key,
+                            "source_key": source_key,
+                            "label": label,
+                            "unit": unit,
+                            "values": values,
+                            **_series_summary(values),
+                        }
+                    )
+                    used_keys.add(display_key)
+    series.sort(key=lambda item: (str(item.get("source_key", "")), str(item.get("key", ""))))
+    return series
+
+
+def build_result_statistics(result: dict, row_count: int, series_count: int) -> dict[str, object]:
+    scalar_keys = [
+        "success",
+        "status",
+        "message",
+        "objective",
+        "best_bound",
+        "gap",
+        "time_s",
+        "node_count",
+        "fuel_kg",
+        "curt_kwh",
+        "heat_kwh",
+        "solver_requested",
+        "solver_used",
+        "solver_backend",
+        "state_workbook",
+        "result_data",
+        "result_statistics",
+        "result_timeseries_csv",
+    ]
+    statistics = {key: result.get(key) for key in scalar_keys if key in result}
+    statistics.update(
+        {
+            "row_count": row_count,
+            "series_count": series_count,
+            "checks": result.get("checks") or {},
+            "model_stats": result.get("model_stats") or {},
+            "objective_breakdown": result.get("objective_breakdown") or {},
+        }
+    )
+    return make_json_safe(statistics)
+
+
+def build_result_data_payload(p: SimpleNamespace, result: dict) -> dict[str, object]:
+    hours = np.asarray(result.get("hours", []), dtype=float).reshape(-1)
+    n = int(hours.size)
+    series = collect_result_series(result, n) if n > 0 else []
+    rows: list[dict[str, object]] = []
+    for idx in range(n):
+        row: dict[str, object] = {"step": idx, "hour": _json_number(hours[idx])}
+        for item in series:
+            values = item.get("values") or []
+            if idx < len(values):
+                row[str(item["key"])] = values[idx]
+        rows.append(row)
+    statistics = build_result_statistics(result, n, len(series))
+    payload = {
+        "version": 1,
+        "row_count": n,
+        "time_axis": {"key": "hour", "label": "时刻", "unit": "h"},
+        "statistics": statistics,
+        "series": series,
+        "rows": rows,
+        "tables": build_detailed_state_tables(p, result),
+    }
+    return make_json_safe(payload)
+
+
+def write_result_data_files(p: SimpleNamespace, result: dict, output_dir: Path) -> dict[str, str]:
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    files = {
+        "result_data": str(output_dir / "optimization_result_data.json"),
+        "statistics": str(output_dir / "optimization_statistics.json"),
+        "timeseries_csv": str(output_dir / "optimization_timeseries.csv"),
+    }
+    if result.get("state_workbook"):
+        files["state_workbook"] = str(result["state_workbook"])
+
+    payload = build_result_data_payload(p, result)
+    payload["files"] = make_json_safe(files)
+    statistics = dict(payload.get("statistics") or {})
+    statistics["files"] = make_json_safe(files)
+    payload["statistics"] = make_json_safe(statistics)
+
+    result_data_path = Path(files["result_data"])
+    statistics_path = Path(files["statistics"])
+    csv_path = Path(files["timeseries_csv"])
+    result_data_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    statistics_path.write_text(json.dumps(statistics, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    rows = list(payload.get("rows") or [])
+    fieldnames = ["step", "hour"] + [str(item.get("key")) for item in payload.get("series", [])]
+    with csv_path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+    return files
+
+
 def plot_results(result: dict, path: Path) -> None:
     hrs = result["hours"]
     fig, axes = plt.subplots(5, 2, figsize=(16, 18))
@@ -4354,40 +4497,6 @@ def plot_heat_flows(p: SimpleNamespace, result: dict, path: Path) -> None:
     plt.close(fig)
 
 
-def format_coarse_warm_start_for_summary(result: dict | None) -> str:
-    if not result:
-        return "未运行"
-    stats = (result.get("model_stats") or {}).get("coarse_warm_start") or {}
-    compact = result.get("coarse_warm_start_result") or {}
-    if not stats.get("enabled") and not compact.get("enabled"):
-        return "未启用或未触发"
-    used = bool(stats.get("used"))
-    status = stats.get("status", compact.get("status", "UNKNOWN"))
-    dt_minutes = stats.get("dt_minutes", compact.get("dt_minutes"))
-    soc_grid_width = stats.get("soc_grid_width", compact.get("soc_grid_width"))
-    current_segments = stats.get("current_segments", compact.get("current_segments"))
-    gap = stats.get("gap", compact.get("gap"))
-    time_s = stats.get("time_s", compact.get("time_s"))
-    start_vars = stats.get("start_variables")
-    start_strategy = stats.get("start_strategy")
-    parts = [f"状态 `{status}`", f"用于主模型 `{used}`"]
-    if dt_minutes is not None:
-        parts.append(f"dt `{float(dt_minutes):g}` min")
-    if soc_grid_width is not None:
-        parts.append(f"SOC宽 `{float(soc_grid_width):g}`")
-    if current_segments is not None:
-        parts.append(f"电流段 `{int(current_segments)}`")
-    if gap is not None:
-        parts.append(f"gap `{float(gap) * 100:.3f}%`")
-    if time_s is not None:
-        parts.append(f"耗时 `{float(time_s):.2f}` s")
-    if start_vars is not None:
-        parts.append(f"初值变量 `{int(start_vars)}`")
-    if start_strategy:
-        parts.append(f"策略 `{start_strategy}`")
-    return "，".join(parts)
-
-
 def write_summary(p: SimpleNamespace, result: dict | None, args, path: Path) -> None:
     results_png = getattr(args, "results_png", RESULTS_PNG)
     switches_png = getattr(args, "switches_png", SWITCHES_PNG)
@@ -4445,7 +4554,6 @@ def write_summary(p: SimpleNamespace, result: dict | None, args, path: Path) -> 
             f"- 求解耗时: {result['time_s']:.2f} s",
             f"- 求解器: `{getattr(args, 'solver', 'gurobi')}`",
             f"- 时间限制: {args.time_limit:.0f} s",
-            f"- 粗粒度初值: {format_coarse_warm_start_for_summary(result)}",
             f"- 柴油消耗: {result['fuel_kg']:.3f} kg",
             f"- 弃风弃光电量: {result['curt_kwh']:.3f} kWh",
             f"- 热控耗电: {result['heat_kwh']:.3f} kWh",
@@ -4476,6 +4584,8 @@ def write_summary(p: SimpleNamespace, result: dict | None, args, path: Path) -> 
             "",
             f"- SOC 范围: {checks['soc_min']:.4f} - {checks['soc_max']:.4f}",
             f"- 电池包电流范围: {checks['i_pack_min_a']:.3f} - {checks['i_pack_max_a']:.3f} A",
+            f"- 温度电流限值范围(充/放): {checks['charge_current_limit_min_a']:.3f} - {checks['charge_current_limit_max_a']:.3f} A / {checks['discharge_current_limit_min_a']:.3f} - {checks['discharge_current_limit_max_a']:.3f} A",
+            f"- 温度电流限值最大越限(充/放): {checks['charge_current_limit_violation_max_a']:.6f} / {checks['discharge_current_limit_violation_max_a']:.6f} A",
             f"- 电池温度范围: {checks['tbat_min_c']:.3f} - {checks['tbat_max_c']:.3f} ℃",
             f"- 液冷罐温度范围: {checks['ttank_min_c']:.3f} - {checks['ttank_max_c']:.3f} ℃",
             f"- 舱体温度范围: {checks['tcont_min_c']:.3f} - {checks['tcont_max_c']:.3f} ℃",
@@ -4507,6 +4617,9 @@ def write_summary(p: SimpleNamespace, result: dict | None, args, path: Path) -> 
             f"- 热价值检查图: `{thermal_value_png}`",
             f"- 各部分传热功率图: `{heat_flows_png}`",
             f"- 明细状态结果文件: `{result.get('state_workbook', '')}`",
+            f"- 完整曲线与统计JSON: `{result.get('result_data', '')}`",
+            f"- 统计信息JSON: `{result.get('result_statistics', '')}`",
+            f"- 全时序曲线CSV: `{result.get('result_timeseries_csv', '')}`",
             "",
             "## 结果观察与旧版对比",
             "",
@@ -4536,6 +4649,9 @@ def get_output_paths(mode: str, output_dir: Path | None = None, dt_minutes: floa
         "thermal_value": base / f"bess_thermal_value_perspective_i2r_{tag}_20260530.png",
         "heat_flows": base / f"bess_heat_flows_perspective_i2r_{tag}_20260530.png",
         "state_workbook": base / f"optimization_results_perspective_i2r_{tag}_20260530.xlsx",
+        "result_data": base / "optimization_result_data.json",
+        "result_statistics": base / "optimization_statistics.json",
+        "result_timeseries_csv": base / "optimization_timeseries.csv",
         "summary": summary,
     }
 
@@ -4549,7 +4665,6 @@ def solve_with_backend(
     mip_gap: float,
     *,
     build_only: bool = False,
-    warm_start_solution: dict | None = None,
 ) -> dict:
     if solver_backend == "gurobi":
         return solve_milp(
@@ -4560,7 +4675,6 @@ def solve_with_backend(
             mip_gap,
             feasibility_focus=True,
             build_only=build_only,
-            warm_start_solution=warm_start_solution,
         )
     if solver_backend == "cplex_native":
         return solve_milp_cplex_native(
@@ -4570,7 +4684,6 @@ def solve_with_backend(
             time_limit,
             mip_gap,
             build_only=build_only,
-            warm_start_solution=warm_start_solution,
         )
     if solver_backend == "mosek_native":
         return solve_milp_mosek_native(
@@ -4580,111 +4693,8 @@ def solve_with_backend(
             time_limit,
             mip_gap,
             build_only=build_only,
-            warm_start_solution=warm_start_solution,
         )
     raise ValueError(f"Unsupported solver backend: {solver_backend}")
-
-
-def clone_params_for_aux_solve(p: SimpleNamespace) -> SimpleNamespace:
-    aux = copy.deepcopy(p)
-    aux.diag_model_stats_json = None
-    aux.diag_log_file = None
-    return aux
-
-
-def should_run_coarse_warm_start(args, bp: Breakpoints, data: dict[str, np.ndarray | float | int]) -> bool:
-    if not getattr(args, "coarse_warm_start", False):
-        return False
-    if getattr(args, "build_only", False):
-        return False
-    if float(getattr(args, "warm_start_dt_minutes", 0.0)) <= 0.0:
-        return False
-    if float(getattr(args, "warm_start_soc_grid_width", 0.0)) <= 0.0:
-        return False
-    if int(getattr(args, "warm_start_current_segments", 0)) <= 0:
-        return False
-
-    main_dt_minutes = float(data["dt"]) / 60.0
-    same_dt = math.isclose(main_dt_minutes, float(args.warm_start_dt_minutes), rel_tol=0.0, abs_tol=1e-9)
-    same_current = int(bp.n_i - 1) == int(args.warm_start_current_segments)
-    main_soc_grid = float(getattr(args, "soc_grid_width", 0.0))
-    same_soc = math.isclose(main_soc_grid, float(args.warm_start_soc_grid_width), rel_tol=0.0, abs_tol=1e-9)
-    same_gap = math.isclose(float(getattr(args, "mip_gap", 0.0)), float(args.warm_start_mip_gap), rel_tol=0.0, abs_tol=1e-12)
-    return not (same_dt and same_current and same_soc and same_gap)
-
-
-def coarse_warm_start_time_limit(args) -> float:
-    configured = getattr(args, "warm_start_time_limit", None)
-    if configured is not None:
-        return float(configured)
-    main_limit = float(getattr(args, "time_limit", 300.0))
-    if main_limit <= 0.0:
-        return 300.0
-    return min(main_limit, 300.0)
-
-
-def run_coarse_warm_start(
-    p: SimpleNamespace,
-    args,
-    solver_backend: str,
-    horizon: float,
-) -> dict:
-    coarse_p = clone_params_for_aux_solve(p)
-    coarse_p.diag_current_mode = getattr(args, "current_mode", getattr(p, "diag_current_mode", "continuous"))
-    coarse_bp = make_breakpoints(
-        coarse_p,
-        args.mode,
-        i_points=None,
-        dt_minutes=float(args.warm_start_dt_minutes),
-        current_segments=int(args.warm_start_current_segments),
-        soc_grid_width=float(args.warm_start_soc_grid_width),
-    )
-    coarse_data = interpolate_profiles(coarse_p, coarse_bp.dt_hours, horizon)
-    coarse_time_limit = coarse_warm_start_time_limit(args)
-    print("-" * 72)
-    print(
-        "Coarse warm start: "
-        f"horizon={horizon:g} h; steps={coarse_data['N']}; dt={float(coarse_data['dt']) / 60:g} min; "
-        f"soc_grid_width={args.warm_start_soc_grid_width:g}; current_segments={coarse_bp.n_i - 1}; "
-        f"gap={float(args.warm_start_mip_gap) * 100:g}%; time_limit={coarse_time_limit:g}s"
-    )
-    started = time.time()
-    result = solve_with_backend(
-        solver_backend,
-        coarse_p,
-        coarse_data,
-        coarse_bp,
-        coarse_time_limit,
-        float(args.warm_start_mip_gap),
-        build_only=False,
-        warm_start_solution=None,
-    )
-    elapsed = time.time() - started
-    if result is None:
-        result = {
-            "success": False,
-            "status": "NOT_RUN",
-            "message": "Coarse warm-start solve returned no result.",
-            "time_s": elapsed,
-        }
-    result["warm_start_dt_minutes"] = float(args.warm_start_dt_minutes)
-    result["warm_start_soc_grid_width"] = float(args.warm_start_soc_grid_width)
-    result["warm_start_current_segments"] = int(args.warm_start_current_segments)
-    result["warm_start_mip_gap"] = float(args.warm_start_mip_gap)
-    result["warm_start_time_limit"] = coarse_time_limit
-    result["warm_start_solver_backend"] = solver_backend
-    result["warm_start_horizon"] = float(horizon)
-    result["warm_start_elapsed_s"] = elapsed
-    status = result.get("status", "UNKNOWN")
-    if result.get("success"):
-        print(
-            "Coarse warm start solved: "
-            f"status={status}; objective={float(result.get('objective', 0.0)):.6g}; "
-            f"gap={float(result.get('gap', 0.0)) * 100:.3f}%; time={float(result.get('time_s', elapsed)):.1f}s"
-        )
-    else:
-        print(f"Coarse warm start not used: status={status}; message={result.get('message', '')}")
-    return result
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -4713,24 +4723,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--current-points", type=int, default=None, help="Deprecated: current breakpoint count. Prefer --current-segments.")
     parser.add_argument("--i-points", type=int, default=None, help="Deprecated alias for --current-points.")
     parser.add_argument("--strict-current-sos2", action="store_true", help="Add SOS2 constraints to each SOC-T current split; intended for short tests.")
-    parser.add_argument(
-        "--coarse-warm-start",
-        dest="coarse_warm_start",
-        action="store_true",
-        default=True,
-        help="Before the main solve, solve a coarse model and use it as a MIP start. Enabled by default.",
-    )
-    parser.add_argument(
-        "--no-coarse-warm-start",
-        dest="coarse_warm_start",
-        action="store_false",
-        help="Disable the coarse-model warm start.",
-    )
-    parser.add_argument("--warm-start-dt-minutes", type=float, default=60.0, help="Coarse warm-start dispatch interval in minutes. Default is 60.")
-    parser.add_argument("--warm-start-soc-grid-width", type=float, default=0.25, help="Coarse warm-start SOC grid width. Default is 0.25.")
-    parser.add_argument("--warm-start-current-segments", type=int, default=5, help="Coarse warm-start current segmentation count. Default is 5.")
-    parser.add_argument("--warm-start-mip-gap", type=float, default=0.05, help="Coarse warm-start MIP gap. Default is 0.05.")
-    parser.add_argument("--warm-start-time-limit", type=float, default=None, help="Coarse warm-start time limit in seconds. Default reuses --time-limit capped at 300s.")
     parser.add_argument("--build-only", action="store_true", help="Build model and write model stats without optimizing.")
     parser.add_argument("--no-plots", action="store_true", help="Skip plot generation.")
     parser.add_argument(
@@ -4804,12 +4796,6 @@ def apply_compute_config_file(args: argparse.Namespace, argv: list[str]) -> None
         "current_mode": ("--current-mode",),
         "soc_grid_width": ("--soc-grid-width",),
         "strict_current_sos2": ("--strict-current-sos2",),
-        "coarse_warm_start": ("--coarse-warm-start", "--no-coarse-warm-start"),
-        "warm_start_dt_minutes": ("--warm-start-dt-minutes",),
-        "warm_start_soc_grid_width": ("--warm-start-soc-grid-width",),
-        "warm_start_current_segments": ("--warm-start-current-segments",),
-        "warm_start_mip_gap": ("--warm-start-mip-gap",),
-        "warm_start_time_limit": ("--warm-start-time-limit",),
         "build_only": ("--build-only",),
         "no_plots": ("--no-plots",),
         "experiment": ("--experiment",),
@@ -4874,13 +4860,6 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("--current-segments must be positive.")
     if args.soc_grid_width <= 0:
         raise ValueError("--soc-grid-width must be positive.")
-    if args.coarse_warm_start:
-        if args.warm_start_dt_minutes <= 0:
-            raise ValueError("--warm-start-dt-minutes must be positive.")
-        if args.warm_start_soc_grid_width <= 0:
-            raise ValueError("--warm-start-soc-grid-width must be positive.")
-        if args.warm_start_current_segments <= 0:
-            raise ValueError("--warm-start-current-segments must be positive.")
     p.diag_mip_focus = args.mip_focus
     p.diag_cuts = args.cuts
     p.diag_heuristics = args.heuristics
@@ -4967,7 +4946,6 @@ def main(argv: list[str] | None = None) -> int:
     result: dict | None = None
     selected_solver_name = ""
     selected_solver_backend = ""
-    selected_coarse_warm_result = None
     for attempt_index, (solver_name, solver_backend) in enumerate(candidates, start=1):
         selected_solver_name = solver_name
         selected_solver_backend = solver_backend
@@ -4991,55 +4969,13 @@ def main(argv: list[str] | None = None) -> int:
             active_backend=solver_backend,
             solver_attempts=solver_attempts,
         )
-
-        coarse_warm_result = None
         try:
-            if should_run_coarse_warm_start(args, bp, data):
-                write_progress(
-                    progress_json,
-                    stage="warm_start_running",
-                    message=f"{solver_name} 正在执行粗粒度热启动求解",
-                    active_solver=solver_name,
-                    active_backend=solver_backend,
-                    solver_attempts=solver_attempts,
-                )
-                try:
-                    coarse_warm_result = run_coarse_warm_start(p, args, solver_backend, horizon)
-                except Exception as exc:
-                    coarse_warm_result = {
-                        "success": False,
-                        "status": "WARM_START_ERROR",
-                        "message": str(exc),
-                        "warm_start_dt_minutes": float(args.warm_start_dt_minutes),
-                        "warm_start_soc_grid_width": float(args.warm_start_soc_grid_width),
-                        "warm_start_current_segments": int(args.warm_start_current_segments),
-                        "warm_start_mip_gap": float(args.warm_start_mip_gap),
-                        "warm_start_time_limit": coarse_warm_start_time_limit(args),
-                        "warm_start_solver_backend": solver_backend,
-                        "warm_start_horizon": float(horizon),
-                    }
-                    print(f"Coarse warm start not used: {exc}")
-                write_progress(
-                    progress_json,
-                    stage="warm_start_finished",
-                    message=f"{solver_name} 粗粒度热启动已结束",
-                    active_solver=solver_name,
-                    active_backend=solver_backend,
-                    last_warm_start=compact_coarse_warm_start_result(coarse_warm_result),
-                    solver_attempts=solver_attempts,
-                )
-            elif args.coarse_warm_start and not args.build_only:
-                print("-" * 72)
-                print("Coarse warm start skipped: main model already matches the coarse warm-start grid and gap.")
-
-            main_warm_start = coarse_warm_result if coarse_warm_result and coarse_warm_result.get("success") else None
             write_progress(
                 progress_json,
                 stage="solving",
                 message=f"{solver_name} 正在优化求解主模型",
                 active_solver=solver_name,
                 active_backend=solver_backend,
-                warm_start_used=bool(main_warm_start),
                 solver_attempts=solver_attempts,
             )
             result = solve_with_backend(
@@ -5050,7 +4986,6 @@ def main(argv: list[str] | None = None) -> int:
                 args.time_limit,
                 args.mip_gap,
                 build_only=args.build_only,
-                warm_start_solution=main_warm_start,
             )
             if result is None:
                 result = {
@@ -5068,11 +5003,9 @@ def main(argv: list[str] | None = None) -> int:
             }
             print(f"Solver attempt failed with exception: {solver_name} - {exc}")
 
-        selected_coarse_warm_result = coarse_warm_result
         result["solver_requested"] = args.solver
         result["solver_used"] = solver_name
         result["solver_backend"] = solver_backend
-        result["coarse_warm_start_result"] = compact_coarse_warm_start_result(coarse_warm_result)
         attempt.update(
             {
                 "finished_at": now_iso(),
@@ -5111,7 +5044,39 @@ def main(argv: list[str] | None = None) -> int:
     result["solver_used"] = selected_solver_name
     result["solver_backend"] = selected_solver_backend
     result["solver_attempts"] = make_json_safe(solver_attempts)
-    result["coarse_warm_start_result"] = compact_coarse_warm_start_result(selected_coarse_warm_result)
+    if result.get("success"):
+        write_progress(
+            progress_json,
+            stage="writing_outputs",
+            message="正在生成明细状态、完整曲线和统计结果文件",
+            active_solver=result.get("solver_used"),
+            active_backend=result.get("solver_backend"),
+            output_paths=paths,
+            last_result=compact_result_for_progress(result),
+        )
+        state_workbook = write_detailed_results_workbook(p, result, paths["state_workbook"])
+        result["state_workbook"] = str(state_workbook)
+        data_files = write_result_data_files(p, result, paths["result_data"].parent)
+        result["result_data"] = data_files["result_data"]
+        result["result_statistics"] = data_files["statistics"]
+        result["result_timeseries_csv"] = data_files["timeseries_csv"]
+    if result.get("success") and not args.no_plots:
+        write_progress(
+            progress_json,
+            stage="writing_outputs",
+            message="正在生成图表和结果摘要",
+            active_solver=result.get("solver_used"),
+            active_backend=result.get("solver_backend"),
+            last_result=compact_result_for_progress(result),
+        )
+        plot_results(result, paths["results"])
+        plot_switches(result, paths["switches"])
+        plot_temperatures(p, result, paths["temperatures"])
+        plot_thermal_storage(p, result, paths["thermal_storage"])
+        plot_thermal_value(p, result, paths["thermal_value"])
+        plot_heat_flows(p, result, paths["heat_flows"])
+    write_summary(p, result, args, paths["summary"])
+
     if args.diagnostics_json:
         args.diagnostics_json.parent.mkdir(parents=True, exist_ok=True)
         payload = {
@@ -5139,38 +5104,13 @@ def main(argv: list[str] | None = None) -> int:
             "objective_breakdown": result.get("objective_breakdown"),
             "checks": result.get("checks"),
             "model_stats": result.get("model_stats"),
-            "coarse_warm_start": result.get("coarse_warm_start_result"),
+            "state_workbook": result.get("state_workbook"),
+            "result_data": result.get("result_data"),
+            "result_statistics": result.get("result_statistics"),
+            "result_timeseries_csv": result.get("result_timeseries_csv"),
             "output_paths": make_json_safe(paths),
         }
         args.diagnostics_json.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    if result.get("success"):
-        write_progress(
-            progress_json,
-            stage="writing_outputs",
-            message="正在生成明细状态结果文件",
-            active_solver=result.get("solver_used"),
-            active_backend=result.get("solver_backend"),
-            output_paths=paths,
-            last_result=compact_result_for_progress(result),
-        )
-        state_workbook = write_detailed_results_workbook(p, result, paths["state_workbook"])
-        result["state_workbook"] = str(state_workbook)
-    if result.get("success") and not args.no_plots:
-        write_progress(
-            progress_json,
-            stage="writing_outputs",
-            message="正在生成图表和结果摘要",
-            active_solver=result.get("solver_used"),
-            active_backend=result.get("solver_backend"),
-            last_result=compact_result_for_progress(result),
-        )
-        plot_results(result, paths["results"])
-        plot_switches(result, paths["switches"])
-        plot_temperatures(p, result, paths["temperatures"])
-        plot_thermal_storage(p, result, paths["thermal_storage"])
-        plot_thermal_value(p, result, paths["thermal_value"])
-        plot_heat_flows(p, result, paths["heat_flows"])
-    write_summary(p, result, args, paths["summary"])
 
     if result.get("success"):
         write_progress(
@@ -5198,6 +5138,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Wrote: {paths['thermal_value']}")
         print(f"Wrote: {paths['heat_flows']}")
         print(f"Wrote: {paths['state_workbook']}")
+        print(f"Wrote: {paths['result_data']}")
+        print(f"Wrote: {paths['result_statistics']}")
+        print(f"Wrote: {paths['result_timeseries_csv']}")
         print(f"Wrote: {paths['summary']}")
         return 0
 

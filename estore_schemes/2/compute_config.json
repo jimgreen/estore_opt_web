@@ -2,8 +2,8 @@
   "solver": "auto",
   "mode": "dayahead_24h",
   "experiment": "perspective_i2r_block20",
-  "dt_minutes": 15.0,
-  "time_limit": 3600.0,
+  "dt_minutes": 15,
+  "time_limit": 3600,
   "mip_gap": 0.009,
   "current_segments": 3,
   "current_mode": "continuous",
@@ -12,15 +12,9 @@
   "mip_focus": 1,
   "cuts": null,
   "heuristics": 0.3,
-  "hours": null,
+  "hours": 72.0,
   "strict_current_sos2": false,
   "tight_temp_bounds": true,
-  "coarse_warm_start": true,
   "build_only": false,
-  "no_plots": true,
-  "warm_start_dt_minutes": 15.0,
-  "warm_start_soc_grid_width": 0.3,
-  "warm_start_current_segments": 3,
-  "warm_start_mip_gap": 0.01,
-  "warm_start_time_limit": null
+  "no_plots": true
 }

@@ -7,6 +7,7 @@ const state = {
   taskBoard: [],
   pollTimer: 0,
   activeResultTab: "overview",
+  selectedCurveKey: "",
   currentLogs: [],
   clearedLogKey: "",
 };
@@ -151,6 +152,8 @@ function updateActionButtons(status, row) {
 }
 
 function renderOverview(task, metrics) {
+  const resultData = task?.result_data || {};
+  const statistics = task?.statistics || resultData.statistics || {};
   const rows = [
     ["任务ID", task?.id || "-"],
     ["方案", state.currentScheme || "-"],
@@ -160,8 +163,13 @@ function renderOverview(task, metrics) {
     ["目标函数", fmt(metrics.objective)],
     ["Gap", fmt(metrics.gap)],
     ["求解时间(s)", fmt(metrics.time_s)],
+    ["时序点数", fmt(resultData.row_count ?? statistics.row_count)],
+    ["曲线数量", fmt((resultData.series || []).length || statistics.series_count)],
+    ["变量数", fmt(metrics.variables_total ?? statistics.model_stats?.variables_total)],
+    ["约束数", fmt(metrics.constraints_total ?? statistics.model_stats?.constraints_total)],
     ["输出目录", task?.run_dir || "-"],
   ];
+  const checkRows = statisticsRows(statistics, metrics);
   document.getElementById("overviewResult").innerHTML = `
     <div class="optimization-overview-grid">
       <div class="overview-composition-stack">
@@ -173,6 +181,9 @@ function renderOverview(task, metrics) {
       <div class="overview-table-card">
         <h2>优化求解结果</h2>
         ${renderTable(rows)}
+        <h2>统计信息</h2>
+        ${renderTable(checkRows)}
+        ${renderResultFiles(task?.result_files || [])}
       </div>
     </div>
   `;
@@ -206,6 +217,12 @@ function renderSafety(task, metrics) {
   const rows = [
     ["SOC范围", metrics.soc_min == null ? "-" : `${fmt(metrics.soc_min)} - ${fmt(metrics.soc_max)}`],
     ["电池温度(℃)", metrics.tbat_min_c == null ? "-" : `${fmt(metrics.tbat_min_c)} - ${fmt(metrics.tbat_max_c)}`],
+    [
+      "电流限值越限(A)",
+      metrics.charge_current_limit_violation_max_a == null
+        ? "-"
+        : `${fmt(metrics.charge_current_limit_violation_max_a, 6)} / ${fmt(metrics.discharge_current_limit_violation_max_a, 6)}`,
+    ],
     ["液冷罐温度(℃)", metrics.ttank_min_c == null ? "-" : `${fmt(metrics.ttank_min_c)} - ${fmt(metrics.ttank_max_c)}`],
     ["舱体温度(℃)", metrics.tcont_min_c == null ? "-" : `${fmt(metrics.tcont_min_c)} - ${fmt(metrics.tcont_max_c)}`],
     ["变量数", fmt(metrics.variables_total)],
@@ -222,6 +239,7 @@ function renderSafety(task, metrics) {
           ${miniBar("SOC下限", metrics.soc_min, "#1fc7aa")}
           ${miniBar("SOC上限", metrics.soc_max, "#72a7ff")}
           ${miniBar("电芯温度", metrics.tbat_max_c, "#ffbd73")}
+          ${miniBar("电流越限", Math.max(Number(metrics.charge_current_limit_violation_max_a || 0), Number(metrics.discharge_current_limit_violation_max_a || 0)), "#ff7b72")}
         </div>
       </div>
     </div>
@@ -427,22 +445,173 @@ function safeFileName(value) {
 }
 
 function renderCurves(task, metrics) {
-  const curveItems = [
-    ["燃油消耗", metrics.fuel_kg],
-    ["目标函数", metrics.objective],
-    ["Gap", metrics.gap],
-    ["SOC最小值", metrics.soc_min],
-    ["SOC最大值", metrics.soc_max],
-    ["电池温度最大值", metrics.tbat_max_c],
-  ];
-  document.getElementById("optimizationCurveNameList").innerHTML = `
-    <ul class="scheme-list-items">${curveItems.map(([name]) => `<li class="scheme-item">${escapeHtml(name)}</li>`).join("")}</ul>
-  `;
-  document.getElementById("optimizationCurveChart").innerHTML = `
-    <div class="mini-bar-chart optimization-curve-fallback">
-      ${curveItems.map(([name, value], index) => miniBar(name, value, ["#1fc7aa", "#72a7ff", "#ffbd73", "#5fe7d8", "#b6f5ff", "#ff7b72"][index % 6])).join("")}
+  const resultData = task?.result_data || {};
+  const series = Array.isArray(resultData.series) ? resultData.series.filter((item) => Array.isArray(item.values)) : [];
+  const rows = Array.isArray(resultData.rows) ? resultData.rows : [];
+  const nameList = document.getElementById("optimizationCurveNameList");
+  const chart = document.getElementById("optimizationCurveChart");
+  if (!nameList || !chart) return;
+  if (!series.length) {
+    const curveItems = [
+      ["燃油消耗", metrics.fuel_kg],
+      ["目标函数", metrics.objective],
+      ["Gap", metrics.gap],
+      ["SOC最小值", metrics.soc_min],
+      ["SOC最大值", metrics.soc_max],
+      ["电池温度最大值", metrics.tbat_max_c],
+    ];
+    nameList.innerHTML = `
+      <div class="curve-list-header">暂无时序结果</div>
+      <ul class="scheme-list-items">${curveItems.map(([name]) => `<li class="scheme-item">${escapeHtml(name)}</li>`).join("")}</ul>
+    `;
+    chart.innerHTML = `
+      <div class="mini-bar-chart optimization-curve-fallback">
+        ${curveItems.map(([name, value], index) => miniBar(name, value, ["#1fc7aa", "#72a7ff", "#ffbd73", "#5fe7d8", "#b6f5ff", "#ff7b72"][index % 6])).join("")}
+      </div>
+    `;
+    return;
+  }
+
+  const selected = chooseCurveSeries(series);
+  state.selectedCurveKey = String(selected.key || "");
+  nameList.innerHTML = `
+    <div class="curve-list-header">
+      <strong>${fmt(resultData.row_count ?? rows.length, 0)}</strong><span>个时刻</span>
+      <strong>${fmt(series.length, 0)}</strong><span>条曲线</span>
+    </div>
+    <div class="curve-list-items">
+      ${series
+        .map((item) => {
+          const active = String(item.key || "") === state.selectedCurveKey;
+          const unit = item.unit ? ` (${item.unit})` : "";
+          return `<button type="button" class="curve-item ${active ? "active" : ""}" data-curve-key="${escapeHtml(item.key || "")}">
+            <span>${escapeHtml(item.label || item.key || "")}</span><em>${escapeHtml(unit)}</em>
+          </button>`;
+        })
+        .join("")}
     </div>
   `;
+  nameList.querySelectorAll("[data-curve-key]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.selectedCurveKey = button.dataset.curveKey || "";
+      renderCurves(state.task, state.task?.metrics || currentBoardRow()?.metrics || {});
+    });
+  });
+  chart.innerHTML = renderLineChart(selected, rows);
+}
+
+function chooseCurveSeries(series) {
+  const selected = series.find((item) => String(item.key || "") === state.selectedCurveKey);
+  if (selected) return selected;
+  const preferred = ["SOC", "T_bat", "P_BESS", "I_bat", "load_kw", "pv_use_kw", "wt_use_kw"];
+  for (const key of preferred) {
+    const item = series.find((entry) => String(entry.key || "") === key);
+    if (item) return item;
+  }
+  return series[0];
+}
+
+function renderLineChart(series, rows) {
+  const chart = scaledChartSeries(series);
+  const width = 920;
+  const height = 430;
+  const pad = { left: 64, right: 26, top: 34, bottom: 52 };
+  const plotWidth = width - pad.left - pad.right;
+  const plotHeight = height - pad.top - pad.bottom;
+  const points = chart.values
+    .map((value, index) => {
+      const row = rows[index] || {};
+      const rawX = Number(row.hour ?? index);
+      return Number.isFinite(value) && Number.isFinite(rawX) ? { x: rawX, y: value, index } : null;
+    })
+    .filter(Boolean);
+  if (!points.length) {
+    return `<div class="curve-empty">当前曲线没有可绘制的数据</div>`;
+  }
+  let minX = Math.min(...points.map((point) => point.x));
+  let maxX = Math.max(...points.map((point) => point.x));
+  let minY = Math.min(...points.map((point) => point.y));
+  let maxY = Math.max(...points.map((point) => point.y));
+  if (Math.abs(maxX - minX) < 1e-9) {
+    minX -= 1;
+    maxX += 1;
+  }
+  if (Math.abs(maxY - minY) < 1e-9) {
+    const expand = Math.max(1, Math.abs(maxY) * 0.1);
+    minY -= expand;
+    maxY += expand;
+  }
+  const xScale = (value) => pad.left + ((value - minX) / (maxX - minX)) * plotWidth;
+  const yScale = (value) => pad.top + plotHeight - ((value - minY) / (maxY - minY)) * plotHeight;
+  const path = points.map((point, index) => `${index === 0 ? "M" : "L"} ${xScale(point.x).toFixed(2)} ${yScale(point.y).toFixed(2)}`).join(" ");
+  const yTicks = Array.from({ length: 5 }, (_, index) => minY + ((maxY - minY) * index) / 4);
+  const xTicks = Array.from({ length: 6 }, (_, index) => minX + ((maxX - minX) * index) / 5);
+  const lastPoint = points[points.length - 1];
+  return `
+    <div class="curve-chart-shell">
+      <div class="curve-chart-toolbar">
+        <div class="curve-chart-title">
+          <h2>${escapeHtml(series.label || series.key || "曲线")}</h2>
+          <span>${escapeHtml(chart.unit ? `单位: ${chart.unit}` : "无单位")}</span>
+        </div>
+        <div class="curve-chart-stats" aria-label="曲线统计">
+          <span>最小 ${escapeHtml(fmt(chart.min))}</span>
+          <span>最大 ${escapeHtml(fmt(chart.max))}</span>
+          <span>平均 ${escapeHtml(fmt(chart.avg))}</span>
+          <span>末值 ${escapeHtml(fmt(lastPoint?.y))}</span>
+        </div>
+      </div>
+      <svg class="curve-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(series.label || series.key || "曲线")}">
+        <rect x="${pad.left}" y="${pad.top}" width="${plotWidth}" height="${plotHeight}" class="curve-plot-bg"></rect>
+        ${yTicks
+          .map((tick) => {
+            const y = yScale(tick);
+            return `<line x1="${pad.left}" y1="${y.toFixed(2)}" x2="${width - pad.right}" y2="${y.toFixed(2)}" class="curve-grid-line"></line>
+              <text x="${pad.left - 10}" y="${(y + 4).toFixed(2)}" class="curve-axis-label" text-anchor="end">${escapeHtml(fmt(tick))}</text>`;
+          })
+          .join("")}
+        ${xTicks
+          .map((tick) => {
+            const x = xScale(tick);
+            return `<line x1="${x.toFixed(2)}" y1="${pad.top}" x2="${x.toFixed(2)}" y2="${height - pad.bottom}" class="curve-grid-line vertical"></line>
+              <text x="${x.toFixed(2)}" y="${height - 18}" class="curve-axis-label" text-anchor="middle">${escapeHtml(fmt(tick))}</text>`;
+          })
+          .join("")}
+        <path class="curve-line-shadow" d="${path}"></path>
+        <path class="curve-line" d="${path}"></path>
+        <circle class="curve-last-point" cx="${xScale(lastPoint.x).toFixed(2)}" cy="${yScale(lastPoint.y).toFixed(2)}" r="4"></circle>
+        <text x="${width - pad.right}" y="${height - 4}" class="curve-axis-label" text-anchor="end">时刻(h)</text>
+      </svg>
+    </div>
+  `;
+}
+
+function scaledChartSeries(series) {
+  const rawValues = Array.isArray(series.values) ? series.values : [];
+  let values = rawValues.map((value) => {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  });
+  let unit = String(series.unit || "");
+  const maxAbs = values.reduce((max, value) => (value == null ? max : Math.max(max, Math.abs(value))), 0);
+  if (String(series.key || "") === "SOC" && maxAbs <= 1.5) {
+    values = values.map((value) => (value == null ? null : value * 100));
+    unit = "%";
+  } else if (unit === "W" && maxAbs >= 1000) {
+    values = values.map((value) => (value == null ? null : value / 1000));
+    unit = "kW";
+  } else if (unit === "Ω" && maxAbs > 0 && maxAbs < 1) {
+    values = values.map((value) => (value == null ? null : value * 1000));
+    unit = "mΩ";
+  }
+  const valid = values.filter((value) => value != null);
+  return {
+    values,
+    unit,
+    min: valid.length ? Math.min(...valid) : null,
+    max: valid.length ? Math.max(...valid) : null,
+    avg: valid.length ? valid.reduce((sum, value) => sum + value, 0) / valid.length : null,
+  };
 }
 
 function bindResultTabs() {
@@ -478,6 +647,62 @@ function metricSummaryCard(title, value, color) {
       <div class="composition-bar-track"><div class="composition-bar-segment" style="width:100%; --composition-segment-color:${color}"><span>${escapeHtml(displayValue)}</span></div></div>
     </section>
   `;
+}
+
+function statisticsRows(statistics, metrics) {
+  const checks = statistics?.checks || {};
+  const modelStats = statistics?.model_stats || {};
+  const value = (...items) => items.find((item) => item !== null && item !== undefined && item !== "");
+  return [
+    ["时序点数", fmt(value(statistics?.row_count, modelStats.steps, metrics.steps), 0)],
+    ["曲线数量", fmt(statistics?.series_count, 0)],
+    ["SOC范围", value(checks.soc_min, metrics.soc_min) == null ? "-" : `${fmt(value(checks.soc_min, metrics.soc_min))} - ${fmt(value(checks.soc_max, metrics.soc_max))}`],
+    [
+      "电芯温度(℃)",
+      value(checks.tbat_min_c, metrics.tbat_min_c) == null ? "-" : `${fmt(value(checks.tbat_min_c, metrics.tbat_min_c))} - ${fmt(value(checks.tbat_max_c, metrics.tbat_max_c))}`,
+    ],
+    [
+      "电流限值越限(A)",
+      value(checks.charge_current_limit_violation_max_a, metrics.charge_current_limit_violation_max_a) == null
+        ? "-"
+        : `${fmt(value(checks.charge_current_limit_violation_max_a, metrics.charge_current_limit_violation_max_a), 6)} / ${fmt(value(checks.discharge_current_limit_violation_max_a, metrics.discharge_current_limit_violation_max_a), 6)}`,
+    ],
+    ["功率平衡残差(kW)", fmt(value(checks.model_balance_max_kw, metrics.model_balance_max_kw), 6)],
+    ["P_BESS后验偏差(kW)", fmt(value(checks.pbess_physical_max_kw, metrics.pbess_physical_max_kw), 6)],
+    ["变量数", fmt(value(modelStats.variables_total, metrics.variables_total), 0)],
+    ["二进制变量", fmt(value(modelStats.binary_variables, metrics.binary_variables), 0)],
+    ["约束数", fmt(value(modelStats.constraints_total, metrics.constraints_total), 0)],
+    ["时间步长(min)", fmt(value(modelStats.dt_minutes, metrics.dt_minutes))],
+  ];
+}
+
+function renderResultFiles(files) {
+  const list = Array.isArray(files) ? files : [];
+  if (!list.length) {
+    return `<div class="result-file-list empty">暂无结果文件</div>`;
+  }
+  return `
+    <div class="result-file-list" aria-label="结果文件">
+      ${list
+        .map((file) => {
+          const size = formatBytes(file.size_bytes);
+          const href = file.href || "#";
+          return `<a class="result-file-link" href="${escapeHtml(href)}" target="_blank" rel="noopener">
+            <span>${escapeHtml(file.label || file.name || "结果文件")}</span>
+            <em>${escapeHtml(file.name || "")}${size ? ` · ${escapeHtml(size)}` : ""}</em>
+          </a>`;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
+function formatBytes(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return "";
+  if (number < 1024) return `${number} B`;
+  if (number < 1024 * 1024) return `${(number / 1024).toFixed(1).replace(/\.0$/, "")} KB`;
+  return `${(number / 1024 / 1024).toFixed(1).replace(/\.0$/, "")} MB`;
 }
 
 function renderTable(rows) {
