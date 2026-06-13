@@ -1,6 +1,6 @@
 const I18N = {
   zh: {
-    "brand": "储能优化调度系统",
+    "brand": "考察站风-光-氢-储-柴联合规划系统",
     "nav.home": "系统首页",
     "nav.schemes": "输入配置",
     "nav.solve": "优化求解",
@@ -22,7 +22,12 @@ const I18N = {
     "auth.toLogin": "已有账号？登录",
     "auth.passwordMismatch": "两次输入的密码不一致",
     "auth.failed": "操作失败",
-    "home.title": "低温风光柴储电热耦合优化调度",
+    "home.title": "考察站风-光-氢-储-柴联合规划系统",
+    "home.language": "语言",
+    "home.theme": "显示主题",
+    "theme.aurora": "科幻蓝",
+    "theme.purple": "科幻紫",
+    "theme.workbench": "工作台",
     "home.subtitle": "围绕 Excel 模型定义文件管理多套方案，启动单次 MILP 优化求解、方案校核与批量计算，并横向比较优化与仿真结果。",
     "home.primary": "配置输入",
     "home.secondary": "进入优化求解",
@@ -31,13 +36,13 @@ const I18N = {
     "home.queuedCount": "排队任务",
     "home.runningCount": "运行任务",
     "home.flowTitle": "业务流程",
-    "feature.schemes.title": "输入配置",
+    "feature.schemes.title": "参数维护",
     "feature.schemes.desc": "导入、复制、预览和编辑模型定义工作簿。",
-    "feature.solve.title": "优化求解",
+    "feature.solve.title": "规划求解",
     "feature.solve.desc": "指定方案与求解参数，查看日志、诊断和结果摘要。",
-    "feature.batch.title": "批量计算",
+    "feature.batch.title": "任务并发",
     "feature.batch.desc": "选择多方案，设置并行度，统一跟踪队列状态。",
-    "feature.verify.title": "方案校核",
+    "feature.verify.title": "方案评估",
     "feature.verify.desc": "按详细公式回放优化调度曲线，估算线性化精度。",
     "feature.comparison.title": "结果对比",
     "feature.comparison.desc": "多选优化和校核结果，横向比较关键指标。",
@@ -99,7 +104,7 @@ const I18N = {
     "form.maxParallel": "并行任务数"
   },
   en: {
-    "brand": "EStore Optimization Dispatch",
+    "brand": "Station Wind-PV-Hydrogen-Storage-Diesel Planning",
     "nav.home": "Home",
     "nav.schemes": "Input Config",
     "nav.solve": "Optimization",
@@ -121,7 +126,12 @@ const I18N = {
     "auth.toLogin": "Already have an account? Sign in",
     "auth.passwordMismatch": "The two passwords do not match",
     "auth.failed": "Operation failed",
-    "home.title": "Low-temperature renewable-diesel-storage electro-thermal dispatch",
+    "home.title": "Station Wind-PV-Hydrogen-Storage-Diesel Planning System",
+    "home.language": "Language",
+    "home.theme": "Theme",
+    "theme.aurora": "Sci-Fi Blue",
+    "theme.purple": "Sci-Fi Purple",
+    "theme.workbench": "Workbench",
     "home.subtitle": "Manage multiple Excel-based scenarios, launch MILP optimization, run scenario checks and batch jobs, then compare optimization and simulation results.",
     "home.primary": "Configure Inputs",
     "home.secondary": "Start Optimization",
@@ -130,13 +140,13 @@ const I18N = {
     "home.queuedCount": "Queued",
     "home.runningCount": "Running",
     "home.flowTitle": "Workflow",
-    "feature.schemes.title": "Input Config",
+    "feature.schemes.title": "Parameters",
     "feature.schemes.desc": "Import, copy, preview and edit model definition workbooks.",
-    "feature.solve.title": "Optimization",
+    "feature.solve.title": "Planning Solve",
     "feature.solve.desc": "Select a scenario and solver parameters, then inspect logs and summaries.",
-    "feature.batch.title": "Batch Runs",
+    "feature.batch.title": "Task Concurrency",
     "feature.batch.desc": "Select multiple scenarios, set parallelism and track the queue.",
-    "feature.verify.title": "Scenario Check",
+    "feature.verify.title": "Scenario Assessment",
     "feature.verify.desc": "Replay dispatch curves with detailed formulas to estimate linearization accuracy.",
     "feature.comparison.title": "Result Compare",
     "feature.comparison.desc": "Compare optimization and verification metrics across selected results.",
@@ -225,6 +235,9 @@ function applyI18n() {
       <button type="button" data-lang="en" class="${currentLang() === "en" ? "active" : ""}">EN</button>
     `;
   });
+  document.querySelectorAll("[data-language-select]").forEach((node) => {
+    node.value = currentLang();
+  });
 }
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -233,6 +246,12 @@ document.addEventListener("DOMContentLoaded", () => {
     const button = event.target.closest("[data-lang]");
     if (!button) return;
     localStorage.setItem("estore_lang", button.dataset.lang);
+    applyI18n();
+  });
+  document.body.addEventListener("change", (event) => {
+    const select = event.target.closest("[data-language-select]");
+    if (!select) return;
+    localStorage.setItem("estore_lang", select.value || "zh");
     applyI18n();
   });
 });

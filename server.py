@@ -2255,6 +2255,30 @@ def task_board_snapshot() -> dict[str, Any]:
     }
 
 
+def task_board_result_info(task_type: str, task: dict[str, Any]) -> dict[str, str]:
+    defaults = {
+        "optimization": ("opt_results.xlsx", "xlsx"),
+        "verification": ("verification_timeseries.csv", "csv"),
+    }
+    default_name, default_kind = defaults.get(task_type, ("results.xlsx", "xlsx"))
+    preferred_exts = [".xlsx", ".csv", ".json"] if task_type == "optimization" else [".csv", ".json", ".xlsx"]
+    for ext in preferred_exts:
+        for item in task.get("result_files") or []:
+            raw_path = str(item.get("path") or item.get("href") or item.get("name") or "")
+            if raw_path.lower().endswith(ext):
+                return {"result_name": Path(raw_path).name, "result_kind": str(item.get("kind") or ext.lstrip("."))}
+    folder_key = "run_dir" if task_type == "optimization" else "output_dir"
+    folder_value = str(task.get(folder_key) or "")
+    folder = Path(folder_value) if folder_value else None
+    if folder and folder.exists():
+        patterns = ["*.xlsx", "*.csv", "*.json"] if task_type == "optimization" else ["verification_timeseries.csv", "verification.json", "*.xlsx"]
+        for pattern in patterns:
+            matches = sorted(folder.glob(pattern), key=lambda path: path.stat().st_mtime, reverse=True)
+            if matches:
+                return {"result_name": matches[0].name, "result_kind": matches[0].suffix.lstrip(".") or default_kind}
+    return {"result_name": default_name, "result_kind": default_kind}
+
+
 def task_board_rows(task_type: str, schemes: list[dict[str, Any]], latest: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     rows = []
     for scheme in schemes:
@@ -2262,6 +2286,7 @@ def task_board_rows(task_type: str, schemes: list[dict[str, Any]], latest: dict[
         if not name:
             continue
         task = latest.get(name) or {}
+        result_info = task_board_result_info(task_type, task)
         status = str(task.get("status") or "未计算")
         active = status in {"排队中", "准备启动", "计算中", "校核中"}
         queued = status == "排队中"
@@ -2274,6 +2299,7 @@ def task_board_rows(task_type: str, schemes: list[dict[str, Any]], latest: dict[
                 "task_type": task_type_label,
                 "scheme": name,
                 "scheme_description": scheme.get("description") or "",
+                **result_info,
                 "status": status,
                 "queued": queued,
                 "process_id": task.get("process_id") or "",
@@ -2535,8 +2561,11 @@ def flatten_verification_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
 
 def comparison_table(selected_ids: list[str]) -> dict[str, Any]:
     all_items = comparison_items()
-    selected_set = set(selected_ids)
-    selected = [item for item in all_items if not selected_set or item["id"] in selected_set]
+    if selected_ids:
+        by_id = {item["id"]: item for item in all_items}
+        selected = [by_id[item_id] for item_id in selected_ids if item_id in by_id]
+    else:
+        selected = all_items
     fields = comparison_fields(selected)
     return {"items": all_items, "selected": selected, "fields": fields}
 

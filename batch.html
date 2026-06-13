@@ -7,8 +7,8 @@
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="assets/app.css">
 </head>
-<body>
-  <main class="app-shell">
+<body class="batch-page">
+  <main class="app-shell batch-shell">
     <header class="topbar">
       <a class="brand" href="index.html" data-i18n="brand">储能优化调度系统</a>
       <nav class="main-nav" aria-label="主功能导航">
@@ -28,33 +28,43 @@
       </div>
     </header>
 
-    <section class="workspace">
+    <section class="workspace batch-workbench">
       <div id="batchError" class="status-error" hidden></div>
-      <section class="command-panel">
-        <div class="task-board-toolbar">
-          <div class="task-type-tabs" role="tablist" aria-label="任务类型切换">
-            <button class="task-type-tab active" type="button" data-task-page="optimization" role="tab" aria-selected="true">优化求解任务</button>
-            <button class="task-type-tab" type="button" data-task-page="verification" role="tab" aria-selected="false">方案校核任务</button>
+      <section class="batch-task-panel" aria-labelledby="batchTaskTitle">
+        <div class="batch-task-head">
+          <div id="batchTaskTabs" class="batch-tabs" role="tablist" aria-label="批量任务类型">
+            <button class="batch-tab active" type="button" data-task-page="optimization" role="tab" aria-selected="true">
+              <span>优化求解任务</span><strong>0</strong>
+            </button>
+            <button class="batch-tab" type="button" data-task-page="verification" role="tab" aria-selected="false">
+              <span>方案校核任务</span><strong>0</strong>
+            </button>
+            <button class="batch-tab" type="button" data-task-page="all" role="tab" aria-selected="false">
+              <span>全部任务</span><strong>0</strong>
+            </button>
+          </div>
+          <div class="batch-head-actions">
+            <span id="batchLastUpdated" class="batch-last-updated">尚未刷新</span>
+            <button id="refreshTasks" class="small" type="button" data-i18n="common.refresh">刷新</button>
           </div>
         </div>
-      </section>
 
-      <section class="main-panel">
-        <div class="panel-head">
-          <h2 data-i18n="batch.queue">任务队列</h2>
-          <button id="refreshTasks" class="small" type="button" data-i18n="common.refresh">刷新</button>
+        <div class="batch-filter-row">
+          <h1 id="batchTaskTitle">优化求解任务</h1>
+          <label id="batchSchemeFilterWrap" class="batch-scheme-filter" hidden>
+            <span>方案名称</span>
+            <select id="batchSchemeFilter" aria-label="按方案名称筛选"></select>
+          </label>
+          <div id="batchSummary" class="batch-summary" aria-label="任务状态汇总"></div>
         </div>
-        <section id="optimizationTaskSection" class="task-section active" data-task-section="optimization">
-          <div id="optimizationTaskTable" class="data-table"></div>
-        </section>
-        <section id="verificationTaskSection" class="task-section" data-task-section="verification" hidden>
-          <div id="verificationTaskTable" class="data-table"></div>
-        </section>
+
+        <div id="batchTaskTable" class="data-table batch-task-table-shell"></div>
       </section>
     </section>
   </main>
   <script src="assets/common.js"></script>
   <script src="assets/i18n.js"></script>
+  <script src="assets/theme.js"></script>
   <script src="assets/auth.js"></script>
   <script src="assets/batch.js"></script>
 </body>

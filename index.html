@@ -3,38 +3,54 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>储能优化调度系统</title>
+  <title>考察站风-光-氢-储-柴联合规划系统</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="assets/app.css">
 </head>
-<body>
-  <main class="home-screen" aria-label="储能优化调度系统首页">
-    <h1 class="home-title" data-i18n="home.title">低温风光柴储电热耦合优化调度</h1>
+<body class="home-page">
+  <main class="home-screen" aria-label="考察站风-光-氢-储-柴联合规划系统首页">
+    <h1 class="home-title" data-i18n="home.title">考察站风-光-氢-储-柴联合规划系统</h1>
 
-    <div class="home-user-status" data-auth-user hidden>
-      <span data-i18n="auth.user">当前用户</span><strong data-auth-username></strong><em data-auth-role></em>
-      <button type="button" data-logout data-i18n="auth.logout">退出</button>
+    <div class="home-config-panel">
+      <div class="home-user-status" data-auth-user hidden>
+        <span data-i18n="auth.user">当前用户</span><strong data-auth-username></strong><em data-auth-role></em>
+        <button type="button" data-logout data-i18n="auth.logout">退出</button>
+      </div>
+      <label class="home-config-select">
+        <span data-i18n="home.language">语言</span>
+        <select data-language-select aria-label="语言">
+          <option value="zh">中文</option>
+          <option value="en">English</option>
+        </select>
+      </label>
+      <label class="home-config-select">
+        <span data-i18n="home.theme">显示主题</span>
+        <select data-theme-select aria-label="显示主题">
+          <option value="aurora" data-i18n="theme.aurora">科幻蓝</option>
+          <option value="purple" data-i18n="theme.purple">科幻紫</option>
+          <option value="workbench" data-i18n="theme.workbench">工作台</option>
+        </select>
+      </label>
     </div>
-    <div class="home-language-switch language-switch" data-language-switch></div>
 
     <nav class="home-feature-grid" aria-label="功能切换">
       <button class="home-feature-entry" type="button" data-href="schemes.html">
         <i class="feature-icon" aria-hidden="true">
           <svg viewBox="0 0 64 64"><path d="M14 12h27l9 9v31H14z"></path><path d="M41 12v10h10"></path><path d="M22 28h20"></path><path d="M22 38h14"></path><path d="M22 48h18"></path></svg>
         </i>
-        <strong data-i18n="feature.schemes.title">输入配置</strong>
+        <strong data-i18n="feature.schemes.title">参数维护</strong>
       </button>
       <button class="home-feature-entry" type="button" data-href="solve.html">
         <i class="feature-icon" aria-hidden="true">
           <svg viewBox="0 0 64 64"><circle cx="32" cy="32" r="23"></circle><path d="M27 21l18 11-18 11z"></path><path d="M32 8v7"></path><path d="M32 49v7"></path><path d="M8 32h7"></path><path d="M49 32h7"></path></svg>
         </i>
-        <strong data-i18n="feature.solve.title">优化求解</strong>
+        <strong data-i18n="feature.solve.title">规划求解</strong>
       </button>
       <button class="home-feature-entry" type="button" data-href="verify.html">
         <i class="feature-icon" aria-hidden="true">
           <svg viewBox="0 0 64 64"><path d="M17 10h30v44H17z"></path><path d="M24 23h16"></path><path d="M24 34h10"></path><circle cx="42" cy="43" r="10"></circle><path d="M37 43l4 4 7-9"></path></svg>
         </i>
-        <strong data-i18n="feature.verify.title">方案校核</strong>
+        <strong data-i18n="feature.verify.title">方案评估</strong>
       </button>
       <button class="home-feature-entry" type="button" data-href="comparison.html">
         <i class="feature-icon" aria-hidden="true">
@@ -46,13 +62,14 @@
         <i class="feature-icon" aria-hidden="true">
           <svg viewBox="0 0 64 64"><rect x="12" y="13" width="40" height="38" rx="5"></rect><path d="M21 25h22"></path><path d="M21 35h16"></path><path d="M21 45h20"></path><circle cx="48" cy="18" r="6"></circle><path d="M48 12v12"></path><path d="M42 18h12"></path></svg>
         </i>
-        <strong data-i18n="feature.batch.title">批量计算</strong>
+        <strong data-i18n="feature.batch.title">任务并发</strong>
       </button>
     </nav>
 
   </main>
   <script src="assets/common.js"></script>
   <script src="assets/i18n.js"></script>
+  <script src="assets/theme.js"></script>
   <script src="assets/auth.js"></script>
   <script>
     document.addEventListener("DOMContentLoaded", () => {

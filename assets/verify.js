@@ -1,5 +1,66 @@
 const DISPATCH_BINARY_KEYS = new Set(["u_pi", "u_po", "u_lh", "u_ch"]);
 const DISPATCH_READONLY_KEYS = new Set(["pack_current_a"]);
+const VERIFICATION_CURVE_GROUPS = [
+  {
+    key: "power",
+    label: "功率",
+    unit: "kW",
+    series: [
+      ["pbess_sim_kw", "BESS实际", "#36c7aa"],
+      ["pbess_ref_kw", "BESS参考", "#7de5d0", "dash"],
+      ["diesel_actual_kw", "柴油", "#f4b860"],
+      ["pv_use_actual_kw", "光伏消纳", "#72a7ff"],
+      ["wt_use_actual_kw", "风电消纳", "#9b8cff"],
+      ["load_kw", "负荷", "#e8eef4", "dash"],
+    ],
+  },
+  {
+    key: "soc",
+    label: "SOC",
+    unit: "",
+    series: [
+      ["soc_sim", "SOC实际", "#36c7aa"],
+      ["soc_ref", "SOC参考", "#7de5d0", "dash"],
+      ["soc_violation", "SOC越限", "#ff7b72"],
+    ],
+  },
+  {
+    key: "temperature",
+    label: "温度",
+    unit: "℃",
+    series: [
+      ["t_bat_sim_c", "电芯", "#36c7aa"],
+      ["t_bat_ref_c", "电芯参考", "#7de5d0", "dash"],
+      ["t_tank_sim_c", "液冷罐", "#72a7ff"],
+      ["t_cont_sim_c", "舱体", "#f4b860"],
+    ],
+  },
+  {
+    key: "renewable",
+    label: "消纳",
+    unit: "kW",
+    series: [
+      ["pv_available_kw", "光伏可用", "#72a7ff", "dash"],
+      ["pv_use_actual_kw", "光伏消纳", "#72a7ff"],
+      ["pv_curt_actual_kw", "弃光", "#4f8ee8"],
+      ["wt_available_kw", "风电可用", "#9b8cff", "dash"],
+      ["wt_use_actual_kw", "风电消纳", "#9b8cff"],
+      ["wt_curt_actual_kw", "弃风", "#7566d8"],
+    ],
+  },
+  {
+    key: "violations",
+    label: "越限",
+    unit: "",
+    series: [
+      ["soc_violation", "SOC", "#ff7b72"],
+      ["charge_current_violation_a", "充电电流(A)", "#f4b860"],
+      ["discharge_current_violation_a", "放电电流(A)", "#ff9b94"],
+      ["t_bat_violation_c", "电芯温度(℃)", "#72a7ff"],
+      ["unserved_kw", "未供电(kW)", "#e8eef4"],
+    ],
+  },
+];
 
 const verifyState = {
   schemes: [],
@@ -8,6 +69,7 @@ const verifyState = {
   verifications: [],
   selectedId: "",
   selectedItem: null,
+  curveMode: "power",
   timer: 0,
 };
 
@@ -380,7 +442,9 @@ async function loadVerificationDetail(id) {
   document.getElementById("cancelVerificationTask").disabled = !item.can_cancel;
   renderVerificationMetrics(item.metrics || {});
   document.getElementById("verificationSummary").textContent = item.summary_text || item.latest_log || "暂无摘要。";
-  renderVerificationRows(item.rows || item.rows_preview || []);
+  const rows = item.rows || item.rows_preview || [];
+  renderVerificationCurves(rows);
+  renderVerificationRows(rows);
 }
 
 async function cancelSelectedVerification() {
@@ -469,6 +533,133 @@ function renderVerificationRows(rows) {
       </tbody>
     </table>
   `;
+}
+
+function renderVerificationCurves(rows) {
+  const panel = document.getElementById("verificationCurvePanel");
+  const tabs = document.getElementById("verificationCurveTabs");
+  const title = document.getElementById("verificationCurveTitle");
+  const meta = document.getElementById("verificationCurveMeta");
+  const svg = document.getElementById("verificationCurveSvg");
+  if (!panel || !tabs || !title || !meta || !svg) return;
+  if (!rows.length) {
+    panel.hidden = true;
+    svg.innerHTML = "";
+    return;
+  }
+  panel.hidden = false;
+  if (!VERIFICATION_CURVE_GROUPS.some((group) => group.key === verifyState.curveMode)) {
+    verifyState.curveMode = "power";
+  }
+  tabs.innerHTML = VERIFICATION_CURVE_GROUPS.map((group) => `
+    <button type="button" class="${group.key === verifyState.curveMode ? "active" : ""}" data-curve-mode="${escapeHtml(group.key)}">${escapeHtml(group.label)}</button>
+  `).join("");
+  tabs.querySelectorAll("[data-curve-mode]").forEach((button) => {
+    button.addEventListener("click", () => {
+      verifyState.curveMode = button.dataset.curveMode || "power";
+      renderVerificationCurves(rows);
+    });
+  });
+
+  const group = VERIFICATION_CURVE_GROUPS.find((item) => item.key === verifyState.curveMode) || VERIFICATION_CURVE_GROUPS[0];
+  title.textContent = `${group.label}时序曲线`;
+  const hours = rows.map((row, index) => finiteNumber(row.hour, index)).filter((value) => value !== null);
+  const minHour = hours.length ? Math.min(...hours) : 0;
+  const maxHour = hours.length ? Math.max(...hours) : rows.length - 1;
+  meta.textContent = `${rows.length} 个时刻 · ${fmt(minHour, 3)} - ${fmt(maxHour, 3)} h`;
+  drawVerificationCurve(svg, rows, group);
+}
+
+function drawVerificationCurve(svg, rows, group) {
+  const width = 960;
+  const height = 360;
+  const margin = { left: 64, right: 24, top: 26, bottom: 46 };
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+  const series = group.series.map(([key, label, color, style]) => {
+    const points = rows.map((row, index) => {
+      const x = finiteNumber(row.hour, index);
+      const y = finiteNumber(row[key]);
+      return x === null || y === null ? null : { x, y };
+    }).filter(Boolean);
+    return { key, label, color, style, points };
+  }).filter((item) => item.points.length > 1);
+
+  if (!series.length) {
+    svg.innerHTML = `
+      <rect class="curve-plot-bg" x="0" y="0" width="${width}" height="${height}" rx="8"></rect>
+      <text class="curve-empty" x="${width / 2}" y="${height / 2}" text-anchor="middle">当前曲线组没有可绘制数据</text>
+    `;
+    return;
+  }
+
+  const allPoints = series.flatMap((item) => item.points);
+  let minX = Math.min(...allPoints.map((point) => point.x));
+  let maxX = Math.max(...allPoints.map((point) => point.x));
+  let minY = Math.min(...allPoints.map((point) => point.y));
+  let maxY = Math.max(...allPoints.map((point) => point.y));
+  if (minX === maxX) {
+    minX -= 1;
+    maxX += 1;
+  }
+  if (minY === maxY) {
+    minY -= Math.abs(minY) || 1;
+    maxY += Math.abs(maxY) || 1;
+  }
+  const paddingY = (maxY - minY) * 0.08;
+  minY -= paddingY;
+  maxY += paddingY;
+  const xScale = (value) => margin.left + ((value - minX) / (maxX - minX)) * plotWidth;
+  const yScale = (value) => margin.top + (1 - (value - minY) / (maxY - minY)) * plotHeight;
+  const gridY = Array.from({ length: 5 }, (_, index) => minY + ((maxY - minY) * index) / 4);
+  const gridX = Array.from({ length: 5 }, (_, index) => minX + ((maxX - minX) * index) / 4);
+  const grid = [
+    ...gridY.map((value) => `
+      <line class="curve-grid-line" x1="${margin.left}" y1="${yScale(value).toFixed(2)}" x2="${width - margin.right}" y2="${yScale(value).toFixed(2)}"></line>
+      <text class="curve-axis-label" x="${margin.left - 10}" y="${(yScale(value) + 4).toFixed(2)}" text-anchor="end">${escapeHtml(fmt(value, 4))}</text>
+    `),
+    ...gridX.map((value) => `
+      <line class="curve-grid-line vertical" x1="${xScale(value).toFixed(2)}" y1="${margin.top}" x2="${xScale(value).toFixed(2)}" y2="${height - margin.bottom}"></line>
+      <text class="curve-axis-label" x="${xScale(value).toFixed(2)}" y="${height - 18}" text-anchor="middle">${escapeHtml(fmt(value, 3))}</text>
+    `),
+  ].join("");
+  const paths = series.map((item) => {
+    const d = item.points.map((point, index) => `${index === 0 ? "M" : "L"}${xScale(point.x).toFixed(2)},${yScale(point.y).toFixed(2)}`).join(" ");
+    const dash = item.style === "dash" ? ' stroke-dasharray="7 6"' : "";
+    const last = item.points[item.points.length - 1];
+    return `
+      <path class="curve-line-shadow" d="${d}"></path>
+      <path class="curve-line" d="${d}" stroke="${item.color}"${dash}></path>
+      <circle class="curve-last-point" cx="${xScale(last.x).toFixed(2)}" cy="${yScale(last.y).toFixed(2)}" r="3.5" fill="${item.color}"></circle>
+    `;
+  }).join("");
+  const legend = series.map((item, index) => {
+    const x = margin.left + (index % 3) * 190;
+    const y = 14 + Math.floor(index / 3) * 18;
+    return `
+      <g class="verification-curve-legend" transform="translate(${x}, ${y})">
+        <line x1="0" y1="0" x2="20" y2="0" stroke="${item.color}" stroke-width="3" ${item.style === "dash" ? 'stroke-dasharray="6 5"' : ""}></line>
+        <text x="28" y="4">${escapeHtml(item.label)}</text>
+      </g>
+    `;
+  }).join("");
+  svg.innerHTML = `
+    <rect class="curve-plot-bg" x="0" y="0" width="${width}" height="${height}" rx="8"></rect>
+    ${grid}
+    <text class="curve-axis-label" x="${width - margin.right}" y="${height - 18}" text-anchor="end">h</text>
+    <text class="curve-axis-label" x="${margin.left}" y="${margin.top - 8}" text-anchor="start">${escapeHtml(group.unit || "")}</text>
+    ${paths}
+    ${legend}
+  `;
+}
+
+function finiteNumber(value, fallback = null) {
+  if (value === null || value === undefined || value === "") {
+    return fallback === null ? null : Number(fallback);
+  }
+  const number = Number(value);
+  if (Number.isFinite(number)) return number;
+  return fallback === null ? null : Number(fallback);
 }
 
 function verificationStatusClass(status) {

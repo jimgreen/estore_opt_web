@@ -1,7 +1,9 @@
 import os
+import shutil
 import sys
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 
 import openpyxl
@@ -87,6 +89,56 @@ class DispatchScheduleTests(unittest.TestCase):
         self.assertAlmostEqual(rows[1]["p_heat_cont_kw"], 0.5)
         self.assertAlmostEqual(rows[1]["pbess_ref_kw"], 15.0)
         self.assertAlmostEqual(rows[1]["dg_ref_kw"], 1.0)
+
+    def test_create_dispatch_scheme_from_optimization_writes_independent_workbook(self):
+        task_id = f"test-dispatch-{uuid.uuid4().hex[:10]}"
+        target_name = f"test_dispatch_scheme_{uuid.uuid4().hex[:10]}"
+        run_dir = server.RUN_ROOT / task_id
+        target_dir = server.scheme_dir(target_name)
+        try:
+            run_dir.mkdir(parents=True, exist_ok=True)
+            server.write_json(run_dir / "run_manifest.json", {"scheme": "2"})
+            server.write_json(
+                run_dir / server.RESULT_DATA_FILE_NAME,
+                {
+                    "rows": [
+                        {
+                            "hour": 0.0,
+                            "I_bat": 24.0,
+                            "SOC": 0.5,
+                            "T_bat": 10.0,
+                            "T_tank": 8.0,
+                            "T_cont": 6.0,
+                            "P_BESS": 12000.0,
+                            "pv_use_kw": 2.0,
+                            "wt_use_kw": 3.0,
+                            "P_dg": 4000.0,
+                            "u_pi": 1.0,
+                            "u_po": 1.0,
+                            "u_lh": 1.0,
+                            "u_ch": 0.0,
+                            "P_heat_liquid_w": 500.0,
+                            "P_heat_cont_w": 0.0,
+                        }
+                    ]
+                },
+            )
+
+            scheme = server.create_dispatch_scheme_from_optimization(task_id, target_name, "from test optimization")
+
+            dispatch_path = server.scheme_dispatch_schedule_path(scheme["name"])
+            self.assertTrue(dispatch_path.exists())
+            self.assertTrue(server.scheme_params_path(scheme["name"]).exists())
+            self.assertNotEqual(dispatch_path.name, server.PARAM_FILE_NAME)
+            loaded = server.read_dispatch_schedule_workbook(dispatch_path, solve.load_params(PARAMS_PATH))
+            self.assertEqual(len(loaded["rows"]), 1)
+            self.assertAlmostEqual(loaded["rows"][0]["pack_current_a"], 24.0)
+            self.assertAlmostEqual(loaded["rows"][0]["p_heat_liquid_kw"], 0.5)
+        finally:
+            if run_dir.exists():
+                shutil.rmtree(run_dir)
+            if target_dir.exists():
+                shutil.rmtree(target_dir)
 
     def test_scheme_verification_uses_time_domain_simulation_not_optimization(self):
         p = solve.load_params(PARAMS_PATH)

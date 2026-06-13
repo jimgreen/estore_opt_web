@@ -96,6 +96,16 @@
             </div>
           </div>
           <div id="verificationMetrics" class="metric-grid"></div>
+          <section id="verificationCurvePanel" class="verification-curve-panel" hidden>
+            <div class="curve-chart-toolbar">
+              <div class="curve-chart-title">
+                <h2 id="verificationCurveTitle">时序曲线</h2>
+                <span id="verificationCurveMeta">选择校核任务后显示完整曲线。</span>
+              </div>
+              <div id="verificationCurveTabs" class="verification-curve-tabs" aria-label="校核曲线切换"></div>
+            </div>
+            <svg id="verificationCurveSvg" class="curve-svg verification-curve-svg" viewBox="0 0 960 360" role="img" aria-label="方案校核时序曲线"></svg>
+          </section>
           <div class="split-results">
             <div>
               <h3 data-i18n="verify.summary">校核摘要</h3>
@@ -112,6 +122,7 @@
   </main>
   <script src="assets/common.js"></script>
   <script src="assets/i18n.js"></script>
+  <script src="assets/theme.js"></script>
   <script src="assets/auth.js"></script>
   <script src="assets/verify.js"></script>
 </body>

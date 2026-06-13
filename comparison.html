@@ -7,8 +7,8 @@
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="assets/app.css">
 </head>
-<body>
-  <main class="app-shell">
+<body class="comparison-page">
+  <main class="app-shell comparison-shell">
     <header class="topbar">
       <a class="brand" href="index.html" data-i18n="brand">储能优化调度系统</a>
       <nav class="main-nav" aria-label="主功能导航">
@@ -28,46 +28,51 @@
       </div>
     </header>
 
-    <section class="workspace two-column">
-      <aside class="side-panel">
-        <div class="panel-head">
-          <h1 data-i18n="comparison.list">结果列表</h1>
-          <button class="small" id="refreshComparison" type="button" data-i18n="common.refresh">刷新</button>
-        </div>
-        <div class="comparison-filters">
-          <label><input type="checkbox" id="showOptimization" checked> <span data-i18n="comparison.opt">优化求解</span></label>
-          <label><input type="checkbox" id="showVerification" checked> <span data-i18n="comparison.verify">方案校核</span></label>
-        </div>
-        <div id="comparisonItemList" class="comparison-list"></div>
-      </aside>
+    <section class="comparison-workbench">
+      <div id="comparisonError" class="status-error" hidden></div>
 
-      <section class="main-panel">
-        <div id="comparisonError" class="status-error" hidden></div>
-        <section class="scheme-summary">
+      <section class="comparison-picker-panel">
+        <div class="comparison-picker-head">
           <div>
-            <span class="section-label" data-i18n="comparison.title">结果对比</span>
-            <h2 id="comparisonTitle">请选择 1 个或多个结果</h2>
+            <span class="section-label">待对比结果</span>
+            <h1>结果对比</h1>
           </div>
           <div class="summary-actions">
-            <button id="selectLatest" type="button" data-i18n="comparison.latest">选择最近结果</button>
-            <button id="clearSelection" type="button" data-i18n="comparison.clear">清空选择</button>
+            <button id="refreshComparison" class="small" type="button" data-i18n="common.refresh">刷新</button>
+            <button id="selectLatest" class="small" type="button" data-i18n="comparison.latest">选择最近结果</button>
+            <button id="addComparisonSlot" class="primary small" type="button">添加对比项</button>
+            <button id="clearSelection" class="danger small" type="button" data-i18n="comparison.clear">清空选择</button>
           </div>
-        </section>
+        </div>
+        <div id="comparisonSlotRail" class="comparison-slot-rail" aria-label="待对比结果队列"></div>
+      </section>
 
-        <div id="comparisonSummaryCards" class="metric-grid"></div>
-        <section class="comparison-section">
-          <h3 data-i18n="comparison.table">指标对比表</h3>
-          <div id="comparisonTable" class="data-table"></div>
-        </section>
-        <section class="comparison-section">
-          <h3 data-i18n="comparison.bars">关键指标条形对比</h3>
-          <div id="comparisonBars" class="bar-compare"></div>
+      <section class="comparison-result-panel">
+        <aside class="comparison-mode-panel">
+          <h2 id="comparisonModeTitle">指标对比</h2>
+          <div id="comparisonScopeTabs" class="comparison-scope-tabs" aria-label="对比视图范围"></div>
+          <div id="comparisonRenderTabs" class="comparison-render-tabs" aria-label="展示方式"></div>
+          <div id="comparisonMetricList" class="comparison-metric-list" aria-label="指标列表"></div>
+        </aside>
+
+        <section class="comparison-main-panel">
+          <div class="comparison-toolbar">
+            <div>
+              <h2 id="comparisonTitle">请选择 1 个或多个结果</h2>
+              <span id="comparisonMeta" class="sheet-meta">支持增删、排序、表格、曲线和柱状图展示。</span>
+            </div>
+            <div id="comparisonLegend" class="comparison-legend"></div>
+          </div>
+          <div id="comparisonTable" class="data-table comparison-output comparison-table-output" hidden></div>
+          <div id="comparisonCurve" class="comparison-output comparison-chart-output" hidden></div>
+          <div id="comparisonBars" class="comparison-output comparison-chart-output" hidden></div>
         </section>
       </section>
     </section>
   </main>
   <script src="assets/common.js"></script>
   <script src="assets/i18n.js"></script>
+  <script src="assets/theme.js"></script>
   <script src="assets/auth.js"></script>
   <script src="assets/comparison.js"></script>
 </body>
