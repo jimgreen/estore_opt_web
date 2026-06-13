@@ -8,3 +8,4 @@ web_server.err.log
 estore_opt_users.sqlite3
 estore_runs/
 estore_verifications/
+runs/

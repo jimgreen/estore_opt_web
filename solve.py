@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import copy
-import csv
 import json
 import math
 import os
@@ -45,14 +44,6 @@ PROJECT_ROOT = WEB_ROOT.parent
 ROOT = PROJECT_ROOT
 DEFAULT_EXCEL_PATH = PROJECT_ROOT / "5.4模型定义_低温风光扩容_更多冷却液_20260512.xlsx"
 DEFAULT_PARAM_PATH = DEFAULT_EXCEL_PATH if DEFAULT_EXCEL_PATH.exists() else PROJECT_ROOT / f"model_params_{SUFFIX}.json"
-RESULTS_PNG = ROOT / "bess_results_perspective_i2r_20260530.png"
-SWITCHES_PNG = ROOT / "bess_switches_perspective_i2r_20260530.png"
-TEMPERATURES_PNG = ROOT / "bess_temperatures_perspective_i2r_20260530.png"
-THERMAL_STORAGE_PNG = ROOT / "bess_thermal_storage_perspective_i2r_20260530.png"
-THERMAL_VALUE_PNG = ROOT / "bess_thermal_value_perspective_i2r_20260530.png"
-HEAT_FLOWS_PNG = ROOT / "bess_heat_flows_perspective_i2r_20260530.png"
-SUMMARY_MD = ROOT / f"bess_summary_{SUFFIX}.md"
-
 DEFAULT_TIGHT_TEMP_BOUNDS = {
     "T_bat_min": 0.0,
     "T_bat_max": 45.0,
@@ -150,9 +141,6 @@ def compact_result_for_progress(result: dict | None) -> dict:
             "solver_used": result.get("solver_used"),
             "solver_backend": result.get("solver_backend"),
             "state_workbook": result.get("state_workbook"),
-            "result_data": result.get("result_data"),
-            "result_statistics": result.get("result_statistics"),
-            "result_timeseries_csv": result.get("result_timeseries_csv"),
             "model_stats": {
                 "solver_name": stats.get("solver_name"),
                 "solver_backend": stats.get("solver_backend"),
@@ -597,7 +585,7 @@ def load_raw_params_from_excel(path: Path) -> dict:
         "source_excel": str(path),
         "generated_on": "loaded_from_excel",
         "variant": SUFFIX,
-        "units_note": "The solver converts kW to W and kJ/K to J/K at load time.",
+        "units_note": "Power input, result output, and stored result curves use kW.",
         "system": {
             "g_std_w_m2": _float(system[1]),
             "base_dt_s": _float(system[2]),
@@ -911,8 +899,9 @@ def estimate_model_size(
     binaries = n_steps * (4 + n_dg_units)
     if current_mode == "discrete":
         binaries += n_steps * n_i
+    diesel_online_constraints = 1 if n_dg_units > 0 else 0
     constraints = n_steps * (
-        46 + n_s + n_t + n_s + n_t + n_s * n_t + n_dg_units * 6
+        46 + n_s + n_t + n_s + n_t + n_s * n_t + n_dg_units * 6 + diesel_online_constraints
     )
     if current_mode == "discrete":
         constraints += n_steps * (1 + n_i)
@@ -976,6 +965,38 @@ def validate_temperature_bounds(p: SimpleNamespace) -> None:
                 f"{label} initial temperature {init}C is outside [{lb}, {ub}]C. "
                 "Relax the corresponding --*-temp-min/--*-temp-max setting."
             )
+
+
+def terminal_deviation_ub(lb: float, ub: float, target: float) -> float:
+    return max(0.0, abs(float(ub) - float(target)), abs(float(target) - float(lb)))
+
+
+def apply_initial_state_config(p: SimpleNamespace, args: argparse.Namespace) -> None:
+    overrides = {
+        "soc": getattr(args, "initial_soc", None),
+        "t_bat_c": getattr(args, "initial_t_bat_c", None),
+        "t_tank_c": getattr(args, "initial_t_tank_c", None),
+        "t_cont_c": getattr(args, "initial_t_cont_c", None),
+    }
+    if all(value is None for value in overrides.values()):
+        return
+    state = dict(getattr(p, "raw", {}).get("initial_state", {}) or {})
+    state.update(
+        {
+            "soc": float(overrides["soc"]) if overrides["soc"] is not None else float(getattr(p, "SOC_init", state.get("soc", 0.5))),
+            "t_bat_c": float(overrides["t_bat_c"]) if overrides["t_bat_c"] is not None else float(getattr(p, "T_bat_init", state.get("t_bat_c", 5.0))),
+            "t_tank_c": float(overrides["t_tank_c"]) if overrides["t_tank_c"] is not None else float(getattr(p, "T_tank_init", state.get("t_tank_c", 5.0))),
+            "t_cont_c": float(overrides["t_cont_c"]) if overrides["t_cont_c"] is not None else float(getattr(p, "T_cont_init", state.get("t_cont_c", 5.0))),
+        }
+    )
+    p.SOC_init = float(state["soc"])
+    p.T_bat_init = float(state["t_bat_c"])
+    p.T_tank_init = float(state["t_tank_c"])
+    p.T_cont_init = float(state["t_cont_c"])
+    if p.SOC_init < float(p.SOC_min) - 1e-9 or p.SOC_init > float(p.SOC_max) + 1e-9:
+        raise ValueError(f"Battery initial SOC {p.SOC_init} is outside [{p.SOC_min}, {p.SOC_max}].")
+    if hasattr(p, "raw"):
+        p.raw["initial_state"] = state
 
 
 def apply_tight_temp_bounds(
@@ -1448,8 +1469,16 @@ def solve_milp_cplex_native(
     cont_low_dev = add_vars(range(n), lambda t: f"cont_low_dev[{t}]", 0.0, max(0.0, p.T_cont_band_low - p.T_cont_min))
     cont_high_dev = add_vars(range(n), lambda t: f"cont_high_dev[{t}]", 0.0, max(0.0, p.T_cont_max - p.T_cont_band_high))
     cont_hot_dev = add_vars(range(n), lambda t: f"cont_hot_dev[{t}]", 0.0, max(0.0, p.T_cont_max - p.T_cont_hot))
-    tank_terminal_short = add_scalar("tank_terminal_short", 0.0, max(0.0, p.T_tank_terminal_min - p.T_tank_min))
-    cont_terminal_short = add_scalar("cont_terminal_short", 0.0, max(0.0, p.T_cont_terminal_min - p.T_cont_min))
+    tank_terminal_short = add_scalar(
+        "tank_terminal_short",
+        0.0,
+        terminal_deviation_ub(p.T_tank_min, p.T_tank_max, p.T_tank_init),
+    )
+    cont_terminal_short = add_scalar(
+        "cont_terminal_short",
+        0.0,
+        terminal_deviation_ub(p.T_cont_min, p.T_cont_max, p.T_cont_init),
+    )
 
     u_pi = add_vars(range(n), lambda t: f"u_pi[{t}]", 0.0, 1.0, "B")
     u_po = add_vars(range(n), lambda t: f"u_po[{t}]", 0.0, 1.0, "B")
@@ -1572,6 +1601,8 @@ def solve_milp_cplex_native(
             )
             add_constr([(P_dg[g, t], 1.0), (u_dg[g, t], -float(unit["p_min_w"]))], "G", 0.0, f"dg_min_{g}_{t}")
             add_constr([(P_dg[g, t], 1.0), (u_dg[g, t], -float(unit["p_max_w"]))], "L", 0.0, f"dg_max_{g}_{t}")
+        if n_g:
+            add_constr([(u_dg[g, t], 1.0) for g in range(n_g)], "G", 1.0, f"dg_at_least_one_on_{t}")
 
         add_constr([(v_bt[t], 1.0), (u_pi[t], -dT_bt_lb)], "G", 0.0, f"vbt_lb0_{t}")
         add_constr([(v_bt[t], 1.0), (u_pi[t], -dT_bt_ub)], "L", 0.0, f"vbt_ub0_{t}")
@@ -1683,9 +1714,10 @@ def solve_milp_cplex_native(
 
     SOC_end = add_scalar("SOC_end", p.SOC_min, p.SOC_max)
     add_constr([(SOC_end, 1.0), (SOC[n - 1], -1.0), (I_bat[n - 1], dt_s / (p.Q_nom * 3600.0))], "E", 0.0, "soc_terminal")
-    soc_dev = add_scalar("soc_dev", 0.0, 0.5)
-    add_constr([(soc_dev, 1.0), (SOC_end, -1.0)], "G", -0.5, "soc_dev_pos")
-    add_constr([(soc_dev, 1.0), (SOC_end, 1.0)], "G", 0.5, "soc_dev_neg")
+    soc_dev = add_scalar("soc_dev", 0.0, terminal_deviation_ub(p.SOC_min, p.SOC_max, p.SOC_init))
+    add_constr([(SOC_end, 1.0)], "E", p.SOC_init, "soc_terminal_target")
+    add_constr([(soc_dev, 1.0), (SOC_end, -1.0)], "G", -p.SOC_init, "soc_dev_pos")
+    add_constr([(soc_dev, 1.0), (SOC_end, 1.0)], "G", p.SOC_init, "soc_dev_neg")
 
     T_bat_end = add_scalar("T_bat_end", p.T_bat_min, p.T_bat_max)
     T_tank_end = add_scalar("T_tank_end", p.T_tank_min, p.T_tank_max)
@@ -1733,8 +1765,12 @@ def solve_milp_cplex_native(
         p.K_cont_amb * float(t_amb[last]) * dt_s / p.C_cont,
         "tcont_terminal",
     )
-    add_constr([(tank_terminal_short, 1.0), (T_tank_end, 1.0)], "G", p.T_tank_terminal_min, "tank_terminal_short")
-    add_constr([(cont_terminal_short, 1.0), (T_cont_end, 1.0)], "G", p.T_cont_terminal_min, "cont_terminal_short")
+    add_constr([(T_tank_end, 1.0)], "E", p.T_tank_init, "ttank_terminal_target")
+    add_constr([(T_cont_end, 1.0)], "E", p.T_cont_init, "tcont_terminal_target")
+    add_constr([(tank_terminal_short, 1.0), (T_tank_end, -1.0)], "G", -p.T_tank_init, "tank_terminal_dev_pos")
+    add_constr([(tank_terminal_short, 1.0), (T_tank_end, 1.0)], "G", p.T_tank_init, "tank_terminal_dev_neg")
+    add_constr([(cont_terminal_short, 1.0), (T_cont_end, -1.0)], "G", -p.T_cont_init, "cont_terminal_dev_pos")
+    add_constr([(cont_terminal_short, 1.0), (T_cont_end, 1.0)], "G", p.T_cont_init, "cont_terminal_dev_neg")
 
     m.linear_constraints.add(lin_expr=lin_exprs, senses="".join(senses), rhs=rhs_values, names=row_names)
     model_stats = model_stats_from_cplex_model(m, bp, n, p, data)
@@ -2197,8 +2233,16 @@ def solve_milp_mosek_native(
     cont_low_dev = add_vars(range(n), lambda t: f"cont_low_dev[{t}]", 0.0, max(0.0, p.T_cont_band_low - p.T_cont_min))
     cont_high_dev = add_vars(range(n), lambda t: f"cont_high_dev[{t}]", 0.0, max(0.0, p.T_cont_max - p.T_cont_band_high))
     cont_hot_dev = add_vars(range(n), lambda t: f"cont_hot_dev[{t}]", 0.0, max(0.0, p.T_cont_max - p.T_cont_hot))
-    tank_terminal_short = add_scalar("tank_terminal_short", 0.0, max(0.0, p.T_tank_terminal_min - p.T_tank_min))
-    cont_terminal_short = add_scalar("cont_terminal_short", 0.0, max(0.0, p.T_cont_terminal_min - p.T_cont_min))
+    tank_terminal_short = add_scalar(
+        "tank_terminal_short",
+        0.0,
+        terminal_deviation_ub(p.T_tank_min, p.T_tank_max, p.T_tank_init),
+    )
+    cont_terminal_short = add_scalar(
+        "cont_terminal_short",
+        0.0,
+        terminal_deviation_ub(p.T_cont_min, p.T_cont_max, p.T_cont_init),
+    )
 
     u_pi = add_vars(range(n), lambda t: f"u_pi[{t}]", 0.0, 1.0, "B")
     u_po = add_vars(range(n), lambda t: f"u_po[{t}]", 0.0, 1.0, "B")
@@ -2320,6 +2364,8 @@ def solve_milp_mosek_native(
             )
             add_constr([(P_dg[g, t], 1.0), (u_dg[g, t], -float(unit["p_min_w"]))], "G", 0.0, f"dg_min_{g}_{t}")
             add_constr([(P_dg[g, t], 1.0), (u_dg[g, t], -float(unit["p_max_w"]))], "L", 0.0, f"dg_max_{g}_{t}")
+        if n_g:
+            add_constr([(u_dg[g, t], 1.0) for g in range(n_g)], "G", 1.0, f"dg_at_least_one_on_{t}")
 
         add_constr([(v_bt[t], 1.0), (u_pi[t], -dT_bt_lb)], "G", 0.0, f"vbt_lb0_{t}")
         add_constr([(v_bt[t], 1.0), (u_pi[t], -dT_bt_ub)], "L", 0.0, f"vbt_ub0_{t}")
@@ -2430,9 +2476,10 @@ def solve_milp_mosek_native(
 
     SOC_end = add_scalar("SOC_end", p.SOC_min, p.SOC_max)
     add_constr([(SOC_end, 1.0), (SOC[n - 1], -1.0), (I_bat[n - 1], dt_s / (p.Q_nom * 3600.0))], "E", 0.0, "soc_terminal")
-    soc_dev = add_scalar("soc_dev", 0.0, 0.5)
-    add_constr([(soc_dev, 1.0), (SOC_end, -1.0)], "G", -0.5, "soc_dev_pos")
-    add_constr([(soc_dev, 1.0), (SOC_end, 1.0)], "G", 0.5, "soc_dev_neg")
+    soc_dev = add_scalar("soc_dev", 0.0, terminal_deviation_ub(p.SOC_min, p.SOC_max, p.SOC_init))
+    add_constr([(SOC_end, 1.0)], "E", p.SOC_init, "soc_terminal_target")
+    add_constr([(soc_dev, 1.0), (SOC_end, -1.0)], "G", -p.SOC_init, "soc_dev_pos")
+    add_constr([(soc_dev, 1.0), (SOC_end, 1.0)], "G", p.SOC_init, "soc_dev_neg")
     T_bat_end = add_scalar("T_bat_end", p.T_bat_min, p.T_bat_max)
     T_tank_end = add_scalar("T_tank_end", p.T_tank_min, p.T_tank_max)
     T_cont_end = add_scalar("T_cont_end", p.T_cont_min, p.T_cont_max)
@@ -2479,8 +2526,12 @@ def solve_milp_mosek_native(
         p.K_cont_amb * float(t_amb[last]) * dt_s / p.C_cont,
         "tcont_terminal",
     )
-    add_constr([(tank_terminal_short, 1.0), (T_tank_end, 1.0)], "G", p.T_tank_terminal_min, "tank_terminal_short")
-    add_constr([(cont_terminal_short, 1.0), (T_cont_end, 1.0)], "G", p.T_cont_terminal_min, "cont_terminal_short")
+    add_constr([(T_tank_end, 1.0)], "E", p.T_tank_init, "ttank_terminal_target")
+    add_constr([(T_cont_end, 1.0)], "E", p.T_cont_init, "tcont_terminal_target")
+    add_constr([(tank_terminal_short, 1.0), (T_tank_end, -1.0)], "G", -p.T_tank_init, "tank_terminal_dev_pos")
+    add_constr([(tank_terminal_short, 1.0), (T_tank_end, 1.0)], "G", p.T_tank_init, "tank_terminal_dev_neg")
+    add_constr([(cont_terminal_short, 1.0), (T_cont_end, -1.0)], "G", -p.T_cont_init, "cont_terminal_dev_pos")
+    add_constr([(cont_terminal_short, 1.0), (T_cont_end, 1.0)], "G", p.T_cont_init, "cont_terminal_dev_neg")
 
     task.appendcons(len(rows))
     for row_idx, (ind, val, bk, bl, bu, name) in enumerate(rows):
@@ -2787,10 +2838,14 @@ def solve_milp(
     cont_high_dev = m.addVars(n, lb=0.0, ub=max(0.0, p.T_cont_max - p.T_cont_band_high), name="cont_high_dev")
     cont_hot_dev = m.addVars(n, lb=0.0, ub=max(0.0, p.T_cont_max - p.T_cont_hot), name="cont_hot_dev")
     tank_terminal_short = m.addVar(
-        lb=0.0, ub=max(0.0, p.T_tank_terminal_min - p.T_tank_min), name="tank_terminal_short"
+        lb=0.0,
+        ub=terminal_deviation_ub(p.T_tank_min, p.T_tank_max, p.T_tank_init),
+        name="tank_terminal_short",
     )
     cont_terminal_short = m.addVar(
-        lb=0.0, ub=max(0.0, p.T_cont_terminal_min - p.T_cont_min), name="cont_terminal_short"
+        lb=0.0,
+        ub=terminal_deviation_ub(p.T_cont_min, p.T_cont_max, p.T_cont_init),
+        name="cont_terminal_short",
     )
 
     u_pi = m.addVars(n, vtype=GRB.BINARY, name="u_pi")
@@ -2910,6 +2965,8 @@ def solve_milp(
             )
             m.addConstr(P_dg[g, t] >= u_dg[g, t] * unit["p_min_w"], name=f"dg_min_{g}_{t}")
             m.addConstr(P_dg[g, t] <= u_dg[g, t] * unit["p_max_w"], name=f"dg_max_{g}_{t}")
+        if n_g:
+            m.addConstr(sum(u_dg[g, t] for g in range(n_g)) >= 1.0, name=f"dg_at_least_one_on_{t}")
 
         x_bt = T_bat[t] - T_tank[t]
         m.addConstr(v_bt[t] >= dT_bt_lb * u_pi[t], name=f"vbt_lb0_{t}")
@@ -3003,9 +3060,10 @@ def solve_milp(
 
     SOC_end = m.addVar(lb=p.SOC_min, ub=p.SOC_max, name="SOC_end")
     m.addConstr(SOC_end == SOC[n - 1] - I_bat[n - 1] * dt_s / (p.Q_nom * 3600.0), name="soc_terminal")
-    soc_dev = m.addVar(lb=0.0, ub=0.5, name="soc_dev")
-    m.addConstr(soc_dev >= SOC_end - 0.5, name="soc_dev_pos")
-    m.addConstr(soc_dev >= 0.5 - SOC_end, name="soc_dev_neg")
+    soc_dev = m.addVar(lb=0.0, ub=terminal_deviation_ub(p.SOC_min, p.SOC_max, p.SOC_init), name="soc_dev")
+    m.addConstr(SOC_end == p.SOC_init, name="soc_terminal_target")
+    m.addConstr(soc_dev >= SOC_end - p.SOC_init, name="soc_dev_pos")
+    m.addConstr(soc_dev >= p.SOC_init - SOC_end, name="soc_dev_neg")
 
     T_bat_end = m.addVar(lb=p.T_bat_min, ub=p.T_bat_max, name="T_bat_end")
     T_tank_end = m.addVar(lb=p.T_tank_min, ub=p.T_tank_max, name="T_tank_end")
@@ -3031,8 +3089,12 @@ def solve_milp(
         + (q_bc_end + q_tc_end + u_ch[last] * p.P_heat_cont - q_camb_end) * dt_s / p.C_cont,
         name="tcont_terminal",
     )
-    m.addConstr(tank_terminal_short >= p.T_tank_terminal_min - T_tank_end, name="tank_terminal_short")
-    m.addConstr(cont_terminal_short >= p.T_cont_terminal_min - T_cont_end, name="cont_terminal_short")
+    m.addConstr(T_tank_end == p.T_tank_init, name="ttank_terminal_target")
+    m.addConstr(T_cont_end == p.T_cont_init, name="tcont_terminal_target")
+    m.addConstr(tank_terminal_short >= T_tank_end - p.T_tank_init, name="tank_terminal_dev_pos")
+    m.addConstr(tank_terminal_short >= p.T_tank_init - T_tank_end, name="tank_terminal_dev_neg")
+    m.addConstr(cont_terminal_short >= T_cont_end - p.T_cont_init, name="cont_terminal_dev_pos")
+    m.addConstr(cont_terminal_short >= p.T_cont_init - T_cont_end, name="cont_terminal_dev_neg")
 
     fuel_kg = sum(M_dg[g, t] * dt_s / 3600.0 for g in range(n_g) for t in range(n))
     heat_kwh = sum((u_lh[t] * p.P_heat_liquid + u_ch[t] * p.P_heat_cont) * dt_s / 3600.0 / 1000.0 for t in range(n))
@@ -3279,7 +3341,7 @@ def solve_milp(
         "formal_objective": "fuel_kg_only",
         "fuel": float(result["fuel_kg"]),
         "nonfuel_terms_are_diagnostics_only": True,
-        "soc_diagnostic": float(abs(result["SOC_end"] - 0.5)),
+        "soc_diagnostic": float(abs(result["SOC_end"] - p.SOC_init)),
         "heat_kwh_diagnostic": float(result["heat_kwh"]),
         "curtailment_kwh_diagnostic": float(result["curt_kwh"]),
         "preheat_short_diagnostic": float(result["preheat_short_score"]),
@@ -3487,8 +3549,8 @@ def apply_mip_start(
 
         soc_guess = float(np.clip(soc_guess - i_guess * dt_s / (p.Q_nom * 3600.0), p.SOC_min, p.SOC_max))
 
-    set_var_start(tank_terminal_short, max(0.0, p.T_tank_terminal_min - float(thermal["T_tank"][-1])))
-    set_var_start(cont_terminal_short, max(0.0, p.T_cont_terminal_min - float(thermal["T_cont"][-1])))
+    set_var_start(tank_terminal_short, abs(float(thermal["T_tank"][-1]) - p.T_tank_init))
+    set_var_start(cont_terminal_short, abs(float(thermal["T_cont"][-1]) - p.T_cont_init))
 
 
 def idle_thermal_start(p: SimpleNamespace, data: dict[str, np.ndarray | float | int]) -> dict[str, np.ndarray]:
@@ -3968,46 +4030,100 @@ def build_detailed_state_tables(p: SimpleNamespace, result: dict) -> dict[str, d
     }
 
 
+def _write_rows_sheet(ws, headers: list[str], rows: list[dict[str, object]]) -> None:
+    ws.append(headers)
+    for row in rows:
+        ws.append([_round_float(row.get(header)) for header in headers])
+
+
+def _style_table_sheet(ws, header_fill, header_font) -> None:
+    from openpyxl.styles import Alignment
+
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+    for cell in ws[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    for row in ws.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment = Alignment(vertical="center")
+            if isinstance(cell.value, float):
+                cell.number_format = "0.000000"
+    for column_cells in ws.columns:
+        max_len = 0
+        col_letter = column_cells[0].column_letter
+        for cell in column_cells:
+            value = "" if cell.value is None else str(cell.value)
+            max_len = max(max_len, min(len(value), 34))
+        ws.column_dimensions[col_letter].width = max(10, min(max_len + 2, 28))
+
+
+def _flatten_statistics_rows(stats: dict[str, object]) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for key, value in stats.items():
+        if isinstance(value, (dict, list)):
+            display_value = json.dumps(make_json_safe(value), ensure_ascii=False)
+        else:
+            display_value = value
+        rows.append({"项目": key, "值": display_value})
+    return rows
+
+
+def _write_result_payload_sheet(wb, payload: dict[str, object]) -> None:
+    ws = wb.create_sheet("__result_payload")
+    ws.sheet_state = "hidden"
+    ws.append(["chunk_index", "json_chunk"])
+    payload_text = json.dumps(make_json_safe(payload), ensure_ascii=False)
+    chunk_size = 30000
+    for index, start in enumerate(range(0, len(payload_text), chunk_size), start=1):
+        ws.append([index, payload_text[start : start + chunk_size]])
+
+
 def write_detailed_results_workbook(p: SimpleNamespace, result: dict, path: Path) -> Path:
     try:
         from openpyxl import Workbook
-        from openpyxl.styles import Alignment, Font, PatternFill
+        from openpyxl.styles import Font, PatternFill
     except ImportError as exc:
         raise ImportError("Writing detailed optimization results requires openpyxl.") from exc
 
-    tables = build_detailed_state_tables(p, result)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    result["state_workbook"] = str(path)
+    payload = build_result_data_payload(p, result)
+    payload["files"] = make_json_safe({"state_workbook": str(path)})
+    statistics = dict(payload.get("statistics") or {})
+    statistics["files"] = make_json_safe({"state_workbook": str(path)})
+    payload["statistics"] = make_json_safe(statistics)
+    tables = dict(payload.get("tables") or {})
     wb = Workbook()
     default = wb.active
     wb.remove(default)
     header_fill = PatternFill("solid", fgColor="0F3A3A")
     header_font = Font(bold=True, color="FFFFFF")
+
+    stats_ws = wb.create_sheet("统计信息")
+    _write_rows_sheet(stats_ws, ["项目", "值"], _flatten_statistics_rows(statistics))
+    _style_table_sheet(stats_ws, header_fill, header_font)
+
+    series_headers = ["key", "source_key", "label", "unit", "min", "max", "avg", "point_count"]
+    series_ws = wb.create_sheet("曲线元数据")
+    _write_rows_sheet(series_ws, series_headers, list(payload.get("series") or []))
+    _style_table_sheet(series_ws, header_fill, header_font)
+
+    curve_headers = ["step", "hour"] + [str(item.get("key")) for item in payload.get("series", [])]
+    curve_ws = wb.create_sheet("调度曲线")
+    _write_rows_sheet(curve_ws, curve_headers, list(payload.get("rows") or []))
+    _style_table_sheet(curve_ws, header_fill, header_font)
+
     for sheet_name, table in tables.items():
         ws = wb.create_sheet(sheet_name[:31])
         headers = list(table["headers"])
         rows = list(table["rows"])
-        ws.append(headers)
-        for row in rows:
-            ws.append([_round_float(row.get(header)) for header in headers])
-        ws.freeze_panes = "A2"
-        ws.auto_filter.ref = ws.dimensions
-        for cell in ws[1]:
-            cell.fill = header_fill
-            cell.font = header_font
-            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        for row in ws.iter_rows(min_row=2):
-            for cell in row:
-                cell.alignment = Alignment(vertical="center")
-                if isinstance(cell.value, float):
-                    cell.number_format = "0.000000"
-        for column_cells in ws.columns:
-            max_len = 0
-            col_letter = column_cells[0].column_letter
-            for cell in column_cells:
-                value = "" if cell.value is None else str(cell.value)
-                max_len = max(max_len, min(len(value), 34))
-            ws.column_dimensions[col_letter].width = max(10, min(max_len + 2, 28))
+        _write_rows_sheet(ws, headers, rows)
+        _style_table_sheet(ws, header_fill, header_font)
+
+    _write_result_payload_sheet(wb, payload)
     wb.save(path)
     return path
 
@@ -4024,16 +4140,16 @@ RESULT_SERIES_META: dict[str, tuple[str, str]] = {
     "T_bat": ("电芯温度", "℃"),
     "T_tank": ("液冷罐温度", "℃"),
     "T_cont": ("舱体温度", "℃"),
-    "P_BESS": ("BESS并网端口功率", "W"),
-    "P_dg": ("柴油机总功率", "W"),
+    "P_BESS": ("BESS并网端口功率", "kW"),
+    "P_dg": ("柴油机总功率", "kW"),
     "M_dg": ("柴油消耗率", "kg/h"),
-    "P_dg_units": ("柴油机单机功率", "W"),
+    "P_dg_units": ("柴油机单机功率", "kW"),
     "M_dg_units": ("柴油机单机油耗率", "kg/h"),
     "u_dg": ("柴油机启停状态", ""),
     "R0": ("电池包等效内阻", "Ω"),
-    "P_dc_pack": ("电池包直流功率", "W"),
-    "P_dc_abs": ("电池包直流功率绝对值", "W"),
-    "Q_gen_pack": ("电池包产热功率", "W"),
+    "P_dc_pack": ("电池包直流功率", "kW"),
+    "P_dc_abs": ("电池包直流功率绝对值", "kW"),
+    "Q_gen_pack": ("电池包产热功率", "kW"),
     "pv_use_kw": ("光伏利用功率", "kW"),
     "wt_use_kw": ("风电利用功率", "kW"),
     "pv_curt_kw": ("弃光功率", "kW"),
@@ -4042,9 +4158,9 @@ RESULT_SERIES_META: dict[str, tuple[str, str]] = {
     "u_po": ("外循环泵启停状态", ""),
     "u_lh": ("液冷加热启停状态", ""),
     "u_ch": ("舱体加热启停状态", ""),
-    "Q_bt": ("电池侧换热功率", "W"),
-    "Q_tamb": ("环境侧换热功率", "W"),
-    "Q_tamb_dump": ("对环境散热功率", "W"),
+    "Q_bt": ("电池侧换热功率", "kW"),
+    "Q_tamb": ("环境侧换热功率", "kW"),
+    "Q_tamb_dump": ("对环境散热功率", "kW"),
     "renewable_surplus_kw": ("风光富余功率", "kW"),
     "renewable_surplus_weight": ("风光富余权重", ""),
     "tank_storage_from_amb_kwh_th": ("液冷罐相对环境储热量", "kWh_th"),
@@ -4053,17 +4169,35 @@ RESULT_SERIES_META: dict[str, tuple[str, str]] = {
     "cont_storage_over_target_kwh_th": ("舱体高于目标储热量", "kWh_th"),
     "tank_useful_storage_kwh_th": ("液冷罐可用储热量", "kWh_th"),
     "cont_useful_storage_kwh_th": ("舱体可用储热量", "kWh_th"),
-    "heat_dump_kw_th": ("散热功率", "kW_th"),
-    "q_bc_w": ("电池-舱体换热功率", "W"),
-    "q_tc_w": ("液冷罐-舱体换热功率", "W"),
-    "q_camb_w": ("舱体-环境换热功率", "W"),
-    "P_heat_liquid_w": ("液冷电加热功率", "W"),
-    "P_heat_cont_w": ("舱体电加热功率", "W"),
-    "P_pump_in_w": ("内循环泵功率", "W"),
-    "P_pump_out_w": ("外循环泵功率", "W"),
+    "heat_dump_kw_th": ("散热功率", "kW"),
+    "q_bc_w": ("电池-舱体换热功率", "kW"),
+    "q_tc_w": ("液冷罐-舱体换热功率", "kW"),
+    "q_camb_w": ("舱体-环境换热功率", "kW"),
+    "P_heat_liquid_w": ("液冷电加热功率", "kW"),
+    "P_heat_cont_w": ("舱体电加热功率", "kW"),
+    "P_pump_in_w": ("内循环泵功率", "kW"),
+    "P_pump_out_w": ("外循环泵功率", "kW"),
 }
 
 RESULT_SERIES_SKIP_KEYS = {"hours", "bp_soc", "bp_temp", "bp_r0", "bp_current"}
+RESULT_SERIES_POWER_W_KEYS = {
+    "P_BESS",
+    "P_dg",
+    "P_dg_units",
+    "P_dc_pack",
+    "P_dc_abs",
+    "Q_gen_pack",
+    "Q_bt",
+    "Q_tamb",
+    "Q_tamb_dump",
+    "q_bc_w",
+    "q_tc_w",
+    "q_camb_w",
+    "P_heat_liquid_w",
+    "P_heat_cont_w",
+    "P_pump_in_w",
+    "P_pump_out_w",
+}
 
 
 def _json_number(value) -> float | None:
@@ -4078,21 +4212,33 @@ def _json_number(value) -> float | None:
     return number if math.isfinite(number) else None
 
 
+def _result_series_display_base(source_key: str) -> str:
+    if source_key.endswith("_w"):
+        return f"{source_key[:-2]}_kw"
+    return source_key
+
+
+def _result_series_scale(source_key: str) -> float:
+    return 0.001 if source_key in RESULT_SERIES_POWER_W_KEYS or source_key.endswith("_w") else 1.0
+
+
 def _series_label_and_unit(source_key: str, display_key: str, index: int | None = None) -> tuple[str, str]:
     label, unit = RESULT_SERIES_META.get(source_key, (source_key, ""))
     if index is not None:
         label = f"{label} {index + 1}"
+    if source_key in RESULT_SERIES_POWER_W_KEYS or source_key.endswith("_w"):
+        unit = "kW"
     if display_key.endswith("_kw") and not unit:
         unit = "kW"
     elif display_key.endswith("_w") and not unit:
-        unit = "W"
+        unit = "kW"
     elif display_key.endswith("_c") and not unit:
         unit = "℃"
     return label, unit
 
 
-def _values_for_result_series(values, n: int) -> list[float | None]:
-    arr = np.asarray(values, dtype=float).reshape(-1)
+def _values_for_result_series(values, n: int, scale: float = 1.0) -> list[float | None]:
+    arr = np.asarray(values, dtype=float).reshape(-1) * float(scale)
     if arr.size >= n:
         arr = arr[:n]
     elif arr.size == n - 1 and n > 0:
@@ -4125,9 +4271,9 @@ def collect_result_series(result: dict, n: int, max_components: int = 32) -> lis
         except (TypeError, ValueError):
             continue
         if arr.ndim == 1 and arr.size in {n, max(0, n - 1)}:
-            display_key = str(key)
+            display_key = _result_series_display_base(str(key))
             label, unit = _series_label_and_unit(str(key), display_key)
-            values = _values_for_result_series(arr, n)
+            values = _values_for_result_series(arr, n, _result_series_scale(str(key)))
             series.append(
                 {
                     "key": display_key,
@@ -4143,11 +4289,11 @@ def collect_result_series(result: dict, n: int, max_components: int = 32) -> lis
             source_key = str(key)
             if arr.shape[1] in {n, max(0, n - 1)} and 0 < arr.shape[0] <= max_components:
                 for index in range(arr.shape[0]):
-                    display_key = f"{source_key}_{index + 1}"
+                    display_key = f"{_result_series_display_base(source_key)}_{index + 1}"
                     if display_key in used_keys:
                         continue
                     label, unit = _series_label_and_unit(source_key, display_key, index)
-                    values = _values_for_result_series(arr[index, :], n)
+                    values = _values_for_result_series(arr[index, :], n, _result_series_scale(source_key))
                     series.append(
                         {
                             "key": display_key,
@@ -4161,11 +4307,11 @@ def collect_result_series(result: dict, n: int, max_components: int = 32) -> lis
                     used_keys.add(display_key)
             elif arr.shape[0] in {n, max(0, n - 1)} and 0 < arr.shape[1] <= max_components:
                 for index in range(arr.shape[1]):
-                    display_key = f"{source_key}_{index + 1}"
+                    display_key = f"{_result_series_display_base(source_key)}_{index + 1}"
                     if display_key in used_keys:
                         continue
                     label, unit = _series_label_and_unit(source_key, display_key, index)
-                    values = _values_for_result_series(arr[:, index], n)
+                    values = _values_for_result_series(arr[:, index], n, _result_series_scale(source_key))
                     series.append(
                         {
                             "key": display_key,
@@ -4198,9 +4344,6 @@ def build_result_statistics(result: dict, row_count: int, series_count: int) -> 
         "solver_used",
         "solver_backend",
         "state_workbook",
-        "result_data",
-        "result_statistics",
-        "result_timeseries_csv",
     ]
     statistics = {key: result.get(key) for key in scalar_keys if key in result}
     statistics.update(
@@ -4238,39 +4381,6 @@ def build_result_data_payload(p: SimpleNamespace, result: dict) -> dict[str, obj
         "tables": build_detailed_state_tables(p, result),
     }
     return make_json_safe(payload)
-
-
-def write_result_data_files(p: SimpleNamespace, result: dict, output_dir: Path) -> dict[str, str]:
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    files = {
-        "result_data": str(output_dir / "optimization_result_data.json"),
-        "statistics": str(output_dir / "optimization_statistics.json"),
-        "timeseries_csv": str(output_dir / "optimization_timeseries.csv"),
-    }
-    if result.get("state_workbook"):
-        files["state_workbook"] = str(result["state_workbook"])
-
-    payload = build_result_data_payload(p, result)
-    payload["files"] = make_json_safe(files)
-    statistics = dict(payload.get("statistics") or {})
-    statistics["files"] = make_json_safe(files)
-    payload["statistics"] = make_json_safe(statistics)
-
-    result_data_path = Path(files["result_data"])
-    statistics_path = Path(files["statistics"])
-    csv_path = Path(files["timeseries_csv"])
-    result_data_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    statistics_path.write_text(json.dumps(statistics, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    rows = list(payload.get("rows") or [])
-    fieldnames = ["step", "hour"] + [str(item.get("key")) for item in payload.get("series", [])]
-    with csv_path.open("w", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(row)
-    return files
 
 
 def plot_results(result: dict, path: Path) -> None:
@@ -4498,6 +4608,8 @@ def plot_heat_flows(p: SimpleNamespace, result: dict, path: Path) -> None:
 
 
 def write_summary(p: SimpleNamespace, result: dict | None, args, path: Path) -> None:
+    # Markdown sidecar generation has been removed; the result workbook is the UI artifact.
+    return
     results_png = getattr(args, "results_png", RESULTS_PNG)
     switches_png = getattr(args, "switches_png", SWITCHES_PNG)
     temperatures_png = getattr(args, "temperatures_png", TEMPERATURES_PNG)
@@ -4608,18 +4720,9 @@ def write_summary(p: SimpleNamespace, result: dict | None, args, path: Path) -> 
             f"- 舱体/内壁可用储热最大/末端: {checks['cont_useful_storage_max_kwh_th']:.3f} / {checks['cont_useful_storage_end_kwh_th']:.3f} kWh_th",
             f"- 外循环散热总量/峰值: {checks['heat_dump_kwh_th']:.3f} kWh_th / {checks['heat_dump_max_kw_th']:.3f} kW_th",
             "",
-            "## 输出图表",
+            "## 输出文件",
             "",
-            f"- 主结果图: `{results_png}`",
-            f"- 启停变量图: `{switches_png}`",
-            f"- 温度曲线图: `{temperatures_png}`",
-            f"- 热储能利用图: `{thermal_storage_png}`",
-            f"- 热价值检查图: `{thermal_value_png}`",
-            f"- 各部分传热功率图: `{heat_flows_png}`",
-            f"- 明细状态结果文件: `{result.get('state_workbook', '')}`",
-            f"- 完整曲线与统计JSON: `{result.get('result_data', '')}`",
-            f"- 统计信息JSON: `{result.get('result_statistics', '')}`",
-            f"- 全时序曲线CSV: `{result.get('result_timeseries_csv', '')}`",
+            f"- 结果工作簿: `{result.get('state_workbook', '')}`",
             "",
             "## 结果观察与旧版对比",
             "",
@@ -4640,19 +4743,8 @@ def get_output_paths(mode: str, output_dir: Path | None = None, dt_minutes: floa
         tag = mode
     else:
         tag = f"{float(dt_minutes):g}min"
-    summary = base / f"bess_summary_perspective_i2r_{tag}_20260530.md"
     return {
-        "results": base / f"bess_results_perspective_i2r_{tag}_20260530.png",
-        "switches": base / f"bess_switches_perspective_i2r_{tag}_20260530.png",
-        "temperatures": base / f"bess_temperatures_perspective_i2r_{tag}_20260530.png",
-        "thermal_storage": base / f"bess_thermal_storage_perspective_i2r_{tag}_20260530.png",
-        "thermal_value": base / f"bess_thermal_value_perspective_i2r_{tag}_20260530.png",
-        "heat_flows": base / f"bess_heat_flows_perspective_i2r_{tag}_20260530.png",
         "state_workbook": base / f"optimization_results_perspective_i2r_{tag}_20260530.xlsx",
-        "result_data": base / "optimization_result_data.json",
-        "result_statistics": base / "optimization_statistics.json",
-        "result_timeseries_csv": base / "optimization_timeseries.csv",
-        "summary": summary,
     }
 
 
@@ -4720,6 +4812,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--current-segments", type=int, default=10, help="Current segmentation count for I^2R/Pdc PWL. Default is 10 segments, which creates 11 current breakpoints.")
     parser.add_argument("--current-mode", choices=["continuous", "discrete"], default="continuous", help="Treat battery current as a continuous PWL variable or force it to one discrete breakpoint per period.")
     parser.add_argument("--soc-grid-width", type=float, default=0.1, help="SOC lookup grid width for R0/OCV linearization. Default is 0.1; use 0.05 for finer SOC lookup.")
+    parser.add_argument("--initial-soc", type=float, default=None, help="Battery initial SOC. The terminal SOC is constrained to the same value.")
+    parser.add_argument("--initial-t-bat-c", type=float, default=None, help="Initial cell temperature in C.")
+    parser.add_argument("--initial-t-tank-c", type=float, default=None, help="Initial liquid tank temperature in C. The terminal liquid tank temperature is constrained to the same value.")
+    parser.add_argument("--initial-t-cont-c", type=float, default=None, help="Initial container temperature in C. The terminal container temperature is constrained to the same value.")
     parser.add_argument("--current-points", type=int, default=None, help="Deprecated: current breakpoint count. Prefer --current-segments.")
     parser.add_argument("--i-points", type=int, default=None, help="Deprecated alias for --current-points.")
     parser.add_argument("--strict-current-sos2", action="store_true", help="Add SOS2 constraints to each SOC-T current split; intended for short tests.")
@@ -4781,7 +4877,7 @@ def apply_compute_config_file(args: argparse.Namespace, argv: list[str]) -> None
     config_path = Path(args.config_file)
     if not config_path.exists():
         raise FileNotFoundError(f"Compute config file not found: {config_path}")
-    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config = json.loads(config_path.read_text(encoding="utf-8-sig"))
     if not isinstance(config, dict):
         raise ValueError(f"Compute config file must contain a JSON object: {config_path}")
     provided = {item.split("=", 1)[0] for item in argv if item.startswith("--")}
@@ -4795,6 +4891,10 @@ def apply_compute_config_file(args: argparse.Namespace, argv: list[str]) -> None
         "current_segments": ("--current-segments",),
         "current_mode": ("--current-mode",),
         "soc_grid_width": ("--soc-grid-width",),
+        "initial_soc": ("--initial-soc",),
+        "initial_t_bat_c": ("--initial-t-bat-c",),
+        "initial_t_tank_c": ("--initial-t-tank-c",),
+        "initial_t_cont_c": ("--initial-t-cont-c",),
         "strict_current_sos2": ("--strict-current-sos2",),
         "build_only": ("--build-only",),
         "no_plots": ("--no-plots",),
@@ -4830,6 +4930,7 @@ def main(argv: list[str] | None = None) -> int:
         output_dir=args.output_dir,
     )
     p = load_params(args.params)
+    apply_initial_state_config(p, args)
     write_progress(
         progress_json,
         stage="parameters_loaded",
@@ -4896,13 +4997,6 @@ def main(argv: list[str] | None = None) -> int:
     data = interpolate_profiles(p, bp.dt_hours, horizon)
     args.dt_minutes = float(data["dt"]) / 60.0
     paths = get_output_paths(args.mode, args.output_dir, args.dt_minutes)
-    paths["summary"] = (args.output_dir or ROOT) / f"bess_summary_perspective_i2r_{args.experiment}_{args.mode}_20260530.md"
-    args.results_png = paths["results"]
-    args.switches_png = paths["switches"]
-    args.temperatures_png = paths["temperatures"]
-    args.thermal_storage_png = paths["thermal_storage"]
-    args.thermal_value_png = paths["thermal_value"]
-    args.heat_flows_png = paths["heat_flows"]
 
     max_dg_points = max(len(u["powers_w"]) for u in p.diesel_units)
     est = estimate_model_size(bp, int(data["N"]), len(p.diesel_units), max_dg_points, current_mode=args.current_mode)
@@ -5048,34 +5142,15 @@ def main(argv: list[str] | None = None) -> int:
         write_progress(
             progress_json,
             stage="writing_outputs",
-            message="正在生成明细状态、完整曲线和统计结果文件",
+            message="正在写入结果工作簿（含统计信息和调度曲线）",
             active_solver=result.get("solver_used"),
             active_backend=result.get("solver_backend"),
             output_paths=paths,
             last_result=compact_result_for_progress(result),
         )
+        result["state_workbook"] = str(paths["state_workbook"])
         state_workbook = write_detailed_results_workbook(p, result, paths["state_workbook"])
         result["state_workbook"] = str(state_workbook)
-        data_files = write_result_data_files(p, result, paths["result_data"].parent)
-        result["result_data"] = data_files["result_data"]
-        result["result_statistics"] = data_files["statistics"]
-        result["result_timeseries_csv"] = data_files["timeseries_csv"]
-    if result.get("success") and not args.no_plots:
-        write_progress(
-            progress_json,
-            stage="writing_outputs",
-            message="正在生成图表和结果摘要",
-            active_solver=result.get("solver_used"),
-            active_backend=result.get("solver_backend"),
-            last_result=compact_result_for_progress(result),
-        )
-        plot_results(result, paths["results"])
-        plot_switches(result, paths["switches"])
-        plot_temperatures(p, result, paths["temperatures"])
-        plot_thermal_storage(p, result, paths["thermal_storage"])
-        plot_thermal_value(p, result, paths["thermal_value"])
-        plot_heat_flows(p, result, paths["heat_flows"])
-    write_summary(p, result, args, paths["summary"])
 
     if args.diagnostics_json:
         args.diagnostics_json.parent.mkdir(parents=True, exist_ok=True)
@@ -5105,9 +5180,6 @@ def main(argv: list[str] | None = None) -> int:
             "checks": result.get("checks"),
             "model_stats": result.get("model_stats"),
             "state_workbook": result.get("state_workbook"),
-            "result_data": result.get("result_data"),
-            "result_statistics": result.get("result_statistics"),
-            "result_timeseries_csv": result.get("result_timeseries_csv"),
             "output_paths": make_json_safe(paths),
         }
         args.diagnostics_json.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -5119,7 +5191,6 @@ def main(argv: list[str] | None = None) -> int:
             message="优化求解完成",
             active_solver=result.get("solver_used"),
             active_backend=result.get("solver_backend"),
-            summary_path=paths["summary"],
             output_paths=paths,
             final_result=compact_result_for_progress(result),
             solver_attempts=result.get("solver_attempts"),
@@ -5131,21 +5202,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Model balance residual max={checks['model_balance_max_kw']:.9f} kW")
         print(f"PWL physical replay deviation max/avg={checks['pbess_physical_max_kw']:.4f}/{checks['pbess_physical_avg_kw']:.4f} kW")
         print(f"Thermal surplus hours={checks['renewable_surplus_hours']:.2f} h, heated in surplus={checks['heated_during_surplus_hours']:.2f} h")
-        print(f"Wrote: {paths['results']}")
-        print(f"Wrote: {paths['switches']}")
-        print(f"Wrote: {paths['temperatures']}")
-        print(f"Wrote: {paths['thermal_storage']}")
-        print(f"Wrote: {paths['thermal_value']}")
-        print(f"Wrote: {paths['heat_flows']}")
         print(f"Wrote: {paths['state_workbook']}")
-        print(f"Wrote: {paths['result_data']}")
-        print(f"Wrote: {paths['result_statistics']}")
-        print(f"Wrote: {paths['result_timeseries_csv']}")
-        print(f"Wrote: {paths['summary']}")
         return 0
 
     print(f"Solve failed: {result.get('status')} - {result.get('message')}")
-    print(f"Wrote: {paths['summary']}")
     if result.get("status") == "BUILD_ONLY":
         write_progress(
             progress_json,
@@ -5153,7 +5213,6 @@ def main(argv: list[str] | None = None) -> int:
             message="模型构建完成，未执行优化",
             active_solver=result.get("solver_used"),
             active_backend=result.get("solver_backend"),
-            summary_path=paths["summary"],
             final_result=compact_result_for_progress(result),
             solver_attempts=result.get("solver_attempts"),
         )
@@ -5164,7 +5223,6 @@ def main(argv: list[str] | None = None) -> int:
         message=f"优化求解失败：{result.get('status')}",
         active_solver=result.get("solver_used"),
         active_backend=result.get("solver_backend"),
-        summary_path=paths["summary"],
         final_result=compact_result_for_progress(result),
         solver_attempts=result.get("solver_attempts"),
     )

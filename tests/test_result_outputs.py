@@ -1,4 +1,3 @@
-import json
 import os
 import sys
 import tempfile
@@ -7,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+from openpyxl import load_workbook
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -94,50 +94,80 @@ class ResultOutputTests(unittest.TestCase):
         self.assertIn("P_BESS", series_by_key)
         self.assertIn("custom_curve", series_by_key)
         self.assertIn("P_dg_units_1", series_by_key)
+        self.assertEqual(series_by_key["P_BESS"]["unit"], "kW")
+        self.assertEqual(series_by_key["P_dc_pack"]["unit"], "kW")
+        self.assertEqual(series_by_key["P_dg_units_1"]["unit"], "kW")
+        self.assertNotIn("W", {item["unit"] for item in payload["series"]})
+        self.assertAlmostEqual(series_by_key["P_BESS"]["values"][1], 5.682)
+        self.assertAlmostEqual(series_by_key["P_dg_units_1"]["values"][1], 2.0)
+        self.assertAlmostEqual(payload["rows"][1]["P_BESS"], 5.682)
+        self.assertAlmostEqual(payload["rows"][1]["P_dg_units_1"], 2.0)
         self.assertEqual(payload["rows"][2]["SOC"], 0.4)
         self.assertEqual(payload["statistics"]["objective"], 12.5)
         self.assertEqual(payload["statistics"]["checks"]["soc_min"], 0.2)
         self.assertEqual(payload["statistics"]["model_stats"]["variables_total"], 30)
         self.assertEqual(len(payload["tables"][CELL_STATE_SHEET]["rows"]), 3)
 
-    def test_write_result_data_files_writes_json_statistics_and_csv(self):
+    def test_result_workbook_embeds_statistics_curves_and_payload_without_sidecars(self):
         with tempfile.TemporaryDirectory() as tmp:
-            files = solve.write_result_data_files(sample_params(), sample_result(), Path(tmp))
+            output_dir = Path(tmp)
+            workbook_path = output_dir / "optimization_results_perspective_i2r_15min_20260530.xlsx"
+            result = sample_result()
+            result["state_workbook"] = str(workbook_path)
 
-            result_data = Path(files["result_data"])
-            statistics = Path(files["statistics"])
-            timeseries_csv = Path(files["timeseries_csv"])
-            self.assertTrue(result_data.exists())
-            self.assertTrue(statistics.exists())
-            self.assertTrue(timeseries_csv.exists())
+            solve.write_detailed_results_workbook(sample_params(), result, workbook_path)
 
-            payload = json.loads(result_data.read_text(encoding="utf-8"))
-            stats = json.loads(statistics.read_text(encoding="utf-8"))
-            csv_lines = timeseries_csv.read_text(encoding="utf-8-sig").splitlines()
-            self.assertEqual(payload["row_count"], 3)
-            self.assertEqual(stats["objective"], 12.5)
-            self.assertIn("custom_curve", csv_lines[0])
-            self.assertEqual(len(csv_lines), 4)
+            self.assertTrue(workbook_path.exists())
+            unexpected = {
+                path.suffix
+                for path in output_dir.iterdir()
+                if path.suffix.lower() in {".png", ".csv", ".json", ".md"}
+            }
+            self.assertEqual(unexpected, set())
+            workbook = load_workbook(workbook_path, read_only=True, data_only=True)
+            try:
+                self.assertIn("统计信息", workbook.sheetnames)
+                self.assertIn("调度曲线", workbook.sheetnames)
+                self.assertIn("曲线元数据", workbook.sheetnames)
+                self.assertIn("__result_payload", workbook.sheetnames)
+                self.assertEqual(workbook["统计信息"]["A1"].value, "项目")
+                self.assertEqual(workbook["调度曲线"]["A1"].value, "step")
+                curve_headers = [cell.value for cell in workbook["调度曲线"][1]]
+                self.assertIn("custom_curve", curve_headers)
+                pbess_col = curve_headers.index("P_BESS") + 1
+                self.assertAlmostEqual(workbook["调度曲线"].cell(row=3, column=pbess_col).value, 5.682)
+                metadata_rows = {
+                    workbook["曲线元数据"].cell(row=row, column=1).value: workbook["曲线元数据"].cell(row=row, column=4).value
+                    for row in range(2, workbook["曲线元数据"].max_row + 1)
+                }
+                self.assertEqual(metadata_rows["P_BESS"], "kW")
+                self.assertEqual(metadata_rows["P_dg_units_1"], "kW")
+                self.assertNotIn("W", set(metadata_rows.values()))
+            finally:
+                workbook.close()
 
-    def test_server_reads_result_data_and_file_links_from_run_dir(self):
+    def test_server_reads_result_data_and_file_links_from_result_workbook(self):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp)
-            (run_dir / "optimization_result_data.json").write_text(
-                json.dumps({"series": [{"key": "SOC"}], "rows": [{"hour": 0.0, "SOC": 0.2}], "statistics": {"objective": 1.0}}),
-                encoding="utf-8",
-            )
-            (run_dir / "optimization_statistics.json").write_text(json.dumps({"objective": 1.0}), encoding="utf-8")
-            (run_dir / "optimization_timeseries.csv").write_text("hour,SOC\n0,0.2\n", encoding="utf-8-sig")
-            (run_dir / "optimization_results_perspective_i2r_15min_20260530.xlsx").write_text("", encoding="utf-8")
+            workbook_path = run_dir / "optimization_results_perspective_i2r_15min_20260530.xlsx"
+            result = sample_result()
+            result["state_workbook"] = str(workbook_path)
+            solve.write_detailed_results_workbook(sample_params(), result, workbook_path)
 
-            payload = server.optimization_result_payload(run_dir, {"objective": 1.0}, {"variables_total": 5})
+            payload = server.optimization_result_payload(run_dir, {"state_workbook": str(workbook_path)}, {"variables_total": 5})
 
-            self.assertEqual(payload["result_data"]["series"][0]["key"], "SOC")
-            self.assertEqual(payload["statistics"]["objective"], 1.0)
+            series_keys = {item["key"] for item in payload["result_data"]["series"]}
+            self.assertIn("SOC", series_keys)
+            self.assertIn("custom_curve", series_keys)
+            self.assertEqual(payload["statistics"]["objective"], 12.5)
             labels = {item["label"] for item in payload["result_files"]}
-            self.assertIn("\u5b8c\u6574\u7ed3\u679cJSON", labels)
-            self.assertIn("\u65f6\u5e8f\u66f2\u7ebfCSV", labels)
-            self.assertIn("\u660e\u7ec6\u5de5\u4f5c\u7c3f", labels)
+            self.assertEqual(labels, {"结果工作簿"})
+
+    def test_output_paths_only_include_result_workbook(self):
+        paths = solve.get_output_paths("dayahead_24h", Path("runs/demo"), 60.0)
+
+        self.assertEqual(set(paths), {"state_workbook"})
+        self.assertEqual(paths["state_workbook"].suffix, ".xlsx")
 
 
 if __name__ == "__main__":

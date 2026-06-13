@@ -58,14 +58,10 @@
         <section class="optimization-result-card">
           <div class="result-tabs" role="tablist" aria-label="优化求解结果切换">
             <button id="optimizationLogViewToggle" class="result-tab" data-result-tab="logs" type="button" aria-selected="false">运行日志</button>
-            <button class="result-tab active" data-result-tab="overview" type="button" aria-selected="true">结果概览</button>
-            <button class="result-tab" data-result-tab="green" type="button" aria-selected="false">经济性指标</button>
-            <button class="result-tab" data-result-tab="safety" type="button" aria-selected="false">安全性指标</button>
+            <button class="result-tab active" data-result-tab="overview" type="button" aria-selected="true">结果总览</button>
             <button id="optimizationCurveViewToggle" class="result-tab" data-result-tab="curves" type="button" aria-selected="false">曲线展示</button>
           </div>
           <div id="overviewResult" class="result-panel active" data-result-panel="overview" role="tabpanel"></div>
-          <div id="greenResult" class="result-panel" data-result-panel="green" role="tabpanel" hidden></div>
-          <div id="safetyResult" class="result-panel" data-result-panel="safety" role="tabpanel" hidden></div>
           <div id="optimizationLogPanel" class="result-panel optimization-log-result-panel" data-result-panel="logs" role="tabpanel" hidden>
             <div id="optimizationLogs" class="optimization-logs" aria-live="polite"></div>
           </div>

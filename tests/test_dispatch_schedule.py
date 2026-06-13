@@ -62,10 +62,13 @@ class DispatchScheduleTests(unittest.TestCase):
             self.assertTrue(dispatch_path.exists())
             self.assertFalse((Path(tmp) / server.PARAM_FILE_NAME).exists())
             wb = openpyxl.load_workbook(dispatch_path, data_only=True)
-            self.assertIn(DISPATCH_SHEET, wb.sheetnames)
-            headers = [cell.value for cell in wb[DISPATCH_SHEET][1]]
-            self.assertIn("\u7535\u82af\u7535\u6d41(A)", headers)
-            self.assertIn("\u6db2\u51b7\u7535\u52a0\u70ed\u529f\u7387(kW)", headers)
+            try:
+                self.assertIn(DISPATCH_SHEET, wb.sheetnames)
+                headers = [cell.value for cell in wb[DISPATCH_SHEET][1]]
+                self.assertIn("\u7535\u82af\u7535\u6d41(A)", headers)
+                self.assertIn("\u6db2\u51b7\u7535\u52a0\u70ed\u529f\u7387(kW)", headers)
+            finally:
+                wb.close()
 
             loaded = server.read_dispatch_schedule_workbook(dispatch_path, p)
             self.assertEqual(len(loaded["rows"]), 2)
@@ -77,8 +80,8 @@ class DispatchScheduleTests(unittest.TestCase):
         p = solve.load_params(PARAMS_PATH)
         result_payload = {
             "rows": [
-                {"hour": 0.0, "I_bat": 0.0, "SOC": 0.5, "T_bat": 10.0, "P_BESS": 0.0, "pv_use_kw": 1.0, "wt_use_kw": 2.0, "P_dg": 3000.0, "u_pi": 1.0, "u_po": 0.0, "u_lh": 1.0, "u_ch": 0.0, "P_heat_liquid_w": 400.0, "P_heat_cont_w": 0.0},
-                {"hour": 0.25, "I_bat": 30.0, "SOC": 0.49, "T_bat": 10.2, "P_BESS": 15000.0, "pv_use_kw": 1.5, "wt_use_kw": 2.5, "P_dg": 1000.0, "u_pi": 1.0, "u_po": 1.0, "u_lh": 0.0, "u_ch": 1.0, "P_heat_liquid_w": 0.0, "P_heat_cont_w": 500.0},
+                {"hour": 0.0, "I_bat": 0.0, "SOC": 0.5, "T_bat": 10.0, "P_BESS": 0.0, "pv_use_kw": 1.0, "wt_use_kw": 2.0, "P_dg": 3.0, "u_pi": 1.0, "u_po": 0.0, "u_lh": 1.0, "u_ch": 0.0, "P_heat_liquid_kw": 0.4, "P_heat_cont_kw": 0.0},
+                {"hour": 0.25, "I_bat": 30.0, "SOC": 0.49, "T_bat": 10.2, "P_BESS": 15.0, "pv_use_kw": 1.5, "wt_use_kw": 2.5, "P_dg": 1.0, "u_pi": 1.0, "u_po": 1.0, "u_lh": 0.0, "u_ch": 1.0, "P_heat_liquid_kw": 0.0, "P_heat_cont_kw": 0.5},
             ]
         }
 
@@ -98,31 +101,39 @@ class DispatchScheduleTests(unittest.TestCase):
         try:
             run_dir.mkdir(parents=True, exist_ok=True)
             server.write_json(run_dir / "run_manifest.json", {"scheme": "2"})
-            server.write_json(
-                run_dir / server.RESULT_DATA_FILE_NAME,
-                {
-                    "rows": [
-                        {
-                            "hour": 0.0,
-                            "I_bat": 24.0,
-                            "SOC": 0.5,
-                            "T_bat": 10.0,
-                            "T_tank": 8.0,
-                            "T_cont": 6.0,
-                            "P_BESS": 12000.0,
-                            "pv_use_kw": 2.0,
-                            "wt_use_kw": 3.0,
-                            "P_dg": 4000.0,
-                            "u_pi": 1.0,
-                            "u_po": 1.0,
-                            "u_lh": 1.0,
-                            "u_ch": 0.0,
-                            "P_heat_liquid_w": 500.0,
-                            "P_heat_cont_w": 0.0,
-                        }
-                    ]
-                },
-            )
+            payload = {
+                "version": 1,
+                "statistics": {"objective": 1.0},
+                "series": [{"key": "I_bat"}, {"key": "SOC"}],
+                "rows": [
+                    {
+                        "hour": 0.0,
+                        "I_bat": 24.0,
+                        "SOC": 0.5,
+                        "T_bat": 10.0,
+                        "T_tank": 8.0,
+                        "T_cont": 6.0,
+                        "P_BESS": 12.0,
+                        "pv_use_kw": 2.0,
+                        "wt_use_kw": 3.0,
+                        "P_dg": 4.0,
+                        "u_pi": 1.0,
+                        "u_po": 1.0,
+                        "u_lh": 1.0,
+                        "u_ch": 0.0,
+                        "P_heat_liquid_kw": 0.5,
+                        "P_heat_cont_kw": 0.0,
+                    }
+                ],
+            }
+            wb = openpyxl.Workbook()
+            wb.active.title = "\u7edf\u8ba1\u4fe1\u606f"
+            payload_ws = wb.create_sheet("__result_payload")
+            payload_ws.sheet_state = "hidden"
+            payload_ws.append(["chunk_index", "json_chunk"])
+            payload_ws.append([1, server.json.dumps(payload, ensure_ascii=False)])
+            wb.save(run_dir / "optimization_results_perspective_i2r_60min_20260530.xlsx")
+            wb.close()
 
             scheme = server.create_dispatch_scheme_from_optimization(task_id, target_name, "from test optimization")
 

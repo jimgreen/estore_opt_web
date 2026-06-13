@@ -86,6 +86,10 @@ DEFAULT_COMPUTE_CONFIG: dict[str, Any] = {
     "cuts": None,
     "heuristics": 0.3,
     "hours": None,
+    "initial_soc": 0.5,
+    "initial_t_bat_c": 5.0,
+    "initial_t_tank_c": 5.0,
+    "initial_t_cont_c": 5.0,
     "strict_current_sos2": False,
     "tight_temp_bounds": True,
     "build_only": False,
@@ -107,6 +111,10 @@ COMPUTE_CONFIG_LABELS: dict[str, str] = {
     "cuts": "Cuts",
     "heuristics": "Heuristics",
     "hours": "时域覆盖(小时)",
+    "initial_soc": "电池初始SOC",
+    "initial_t_bat_c": "电芯初始温度(℃)",
+    "initial_t_tank_c": "液冷罐初始温度(℃)",
+    "initial_t_cont_c": "舱体初始温度(℃)",
     "strict_current_sos2": "严格电流SOS2",
     "tight_temp_bounds": "使用紧温度边界",
     "build_only": "仅建模检查",
@@ -353,6 +361,10 @@ def normalize_compute_config(config: dict[str, Any] | None = None) -> dict[str, 
         "soc_grid_width",
         "heuristics",
         "hours",
+        "initial_soc",
+        "initial_t_bat_c",
+        "initial_t_tank_c",
+        "initial_t_cont_c",
     }
     bool_keys = {"strict_current_sos2", "tight_temp_bounds", "build_only", "no_plots"}
     for key in int_keys:
@@ -377,6 +389,8 @@ def normalize_compute_config(config: dict[str, Any] | None = None) -> dict[str, 
         raise ValueError("电流分段数必须大于 0")
     if cfg["soc_grid_width"] is None or cfg["soc_grid_width"] <= 0:
         raise ValueError("SOC网格宽度必须大于 0")
+    if cfg["initial_soc"] is None or cfg["initial_soc"] < 0.0 or cfg["initial_soc"] > 1.0:
+        raise ValueError("电池初始SOC必须在 0 到 1 之间")
     if cfg["threads"] is None or cfg["threads"] <= 0:
         cfg["threads"] = max(1, os.cpu_count() or 1)
     if cfg["mip_focus"] not in {1, 2, 3}:
@@ -501,6 +515,8 @@ def ensure_scheme_compute_config(name: str) -> dict[str, Any]:
         write_compute_config_sheet(name, cfg)
     else:
         cfg = normalize_compute_config(sheet_config)
+        if any(key not in sheet_config for key in DEFAULT_COMPUTE_CONFIG):
+            write_compute_config_sheet(name, cfg)
     current_json = read_json(path, None)
     if current_json != cfg:
         write_json(path, cfg)
@@ -919,12 +935,13 @@ def read_dispatch_schedule_workbook(path: Path, p: Any | None = None) -> dict[st
 
 def dispatch_rows_from_result_data(result_data: dict[str, Any], p: Any | None = None) -> list[dict[str, Any]]:
     source_rows = list(result_data.get("rows") or [])
+    unit_by_key = {str(item.get("key")): str(item.get("unit") or "") for item in result_data.get("series") or []}
     n_p = max(1, int(getattr(p, "N_p", 1))) if p is not None else 1
     rows: list[dict[str, Any]] = []
     for raw in source_rows:
         i_pack = raw.get("I_bat", raw.get("pack_current_a", 0.0)) or 0.0
-        p_heat_liquid_w = raw.get("P_heat_liquid_w")
-        p_heat_cont_w = raw.get("P_heat_cont_w")
+        p_heat_liquid_kw = result_power_kw(raw, "P_heat_liquid_kw", unit_by_key, legacy_w_key="P_heat_liquid_w") or 0.0
+        p_heat_cont_kw = result_power_kw(raw, "P_heat_cont_kw", unit_by_key, legacy_w_key="P_heat_cont_w") or 0.0
         rows.append(
             {
                 "hour": raw.get("hour", raw.get("时刻(h)", len(rows))),
@@ -933,20 +950,35 @@ def dispatch_rows_from_result_data(result_data: dict[str, Any], p: Any | None = 
                 "u_pi": float(raw.get("u_pi", 0.0) or 0.0),
                 "u_po": float(raw.get("u_po", 0.0) or 0.0),
                 "u_lh": float(raw.get("u_lh", 0.0) or 0.0),
-                "p_heat_liquid_kw": float(p_heat_liquid_w or 0.0) / 1000.0,
+                "p_heat_liquid_kw": p_heat_liquid_kw,
                 "u_ch": float(raw.get("u_ch", 0.0) or 0.0),
-                "p_heat_cont_kw": float(p_heat_cont_w or 0.0) / 1000.0,
+                "p_heat_cont_kw": p_heat_cont_kw,
                 "soc_ref": raw.get("SOC"),
                 "t_bat_ref_c": raw.get("T_bat"),
                 "t_tank_ref_c": raw.get("T_tank"),
                 "t_cont_ref_c": raw.get("T_cont"),
-                "pbess_ref_kw": float(raw.get("P_BESS") or 0.0) / 1000.0,
+                "pbess_ref_kw": result_power_kw(raw, "P_BESS", unit_by_key) or 0.0,
                 "pv_use_ref_kw": raw.get("pv_use_kw"),
                 "wt_use_ref_kw": raw.get("wt_use_kw"),
-                "dg_ref_kw": float(raw.get("P_dg") or 0.0) / 1000.0,
+                "dg_ref_kw": result_power_kw(raw, "P_dg", unit_by_key) or 0.0,
             }
         )
     return rows
+
+
+def result_power_kw(raw: dict[str, Any], key: str, unit_by_key: dict[str, str] | None = None, legacy_w_key: str | None = None) -> float | None:
+    legacy_w_keys = {"P_BESS", "P_dg"}
+    if key in raw and raw.get(key) not in (None, ""):
+        value = float(raw.get(key) or 0.0)
+        unit = str((unit_by_key or {}).get(key) or "").lower()
+        if unit == "w":
+            return value / 1000.0
+        if not unit and key in legacy_w_keys and abs(value) >= 1000.0:
+            return value / 1000.0
+        return value
+    if legacy_w_key and legacy_w_key in raw and raw.get(legacy_w_key) not in (None, ""):
+        return float(raw.get(legacy_w_key) or 0.0) / 1000.0
+    return None
 
 
 def dispatch_schedule_payload(name: str) -> dict[str, Any]:
@@ -1029,16 +1061,16 @@ def create_dispatch_scheme_from_optimization(task_id: str, target_name: str, des
     run_dir = RUN_ROOT / safe_name(task_id)
     if not run_dir.exists():
         run_dir = RUN_ROOT / str(task_id)
-    result_data_path = run_dir / RESULT_DATA_FILE_NAME
-    if not result_data_path.exists():
-        raise FileNotFoundError("优化任务没有完整结果JSON，无法生成调度控制文件")
     manifest = read_json(run_dir / "run_manifest.json", {}) or {}
     source_scheme = str(manifest.get("scheme") or "")
     if not source_scheme:
         raise ValueError("优化任务缺少来源方案信息")
     scheme = copy_scheme(source_scheme, target_name, description or f"由优化任务 {task_id} 生成的调度方案")
     p = load_solver_module().load_params(scheme_params_path(scheme["name"]))
-    rows = dispatch_rows_from_result_data(read_json(result_data_path, {}) or {}, p)
+    result_payload = optimization_result_payload(run_dir)
+    rows = dispatch_rows_from_result_data(result_payload.get("result_data") or {}, p)
+    if not rows:
+        raise FileNotFoundError("优化任务没有可读取的结果工作簿，无法生成调度控制文件")
     write_dispatch_schedule_workbook(scheme_dispatch_schedule_path(scheme["name"]), rows, p)
     touch_scheme_meta(scheme["name"])
     return scheme_summary(scheme["name"])
@@ -1125,6 +1157,73 @@ def fallback_statistics(diag: dict[str, Any], stats: dict[str, Any]) -> dict[str
     }
 
 
+def decode_workbook_json_value(value: Any) -> Any:
+    if isinstance(value, str) and value[:1] in {"{", "["}:
+        try:
+            return json.loads(value)
+        except Exception:
+            return value
+    return cell_to_json(value)
+
+
+def table_rows_from_worksheet(ws) -> list[dict[str, Any]]:
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return []
+    headers = [str(cell_to_json(value) or "") for value in rows[0]]
+    output: list[dict[str, Any]] = []
+    for raw in rows[1:]:
+        item = {
+            headers[index]: decode_workbook_json_value(value)
+            for index, value in enumerate(raw)
+            if index < len(headers) and headers[index]
+        }
+        if any(value not in (None, "") for value in item.values()):
+            output.append(item)
+    return output
+
+
+def read_optimization_result_workbook(path: Path | str | None) -> dict[str, Any]:
+    if not path:
+        return {}
+    workbook_path = Path(path)
+    if not workbook_path.exists():
+        return {}
+    wb = load_workbook(workbook_path, read_only=True, data_only=True)
+    try:
+        if "__result_payload" in wb.sheetnames:
+            chunks: list[str] = []
+            for row in wb["__result_payload"].iter_rows(min_row=2, values_only=True):
+                if len(row) >= 2 and row[1] not in (None, ""):
+                    chunks.append(str(row[1]))
+            if chunks:
+                payload = json.loads("".join(chunks))
+                if isinstance(payload, dict):
+                    return payload
+
+        statistics: dict[str, Any] = {}
+        if "统计信息" in wb.sheetnames:
+            for row in table_rows_from_worksheet(wb["统计信息"]):
+                key = str(row.get("项目") or "")
+                if key:
+                    statistics[key] = row.get("值")
+        series = table_rows_from_worksheet(wb["曲线元数据"]) if "曲线元数据" in wb.sheetnames else []
+        rows = table_rows_from_worksheet(wb["调度曲线"]) if "调度曲线" in wb.sheetnames else []
+        if not statistics and not series and not rows:
+            return {}
+        return {
+            "version": 1,
+            "row_count": len(rows),
+            "time_axis": {"key": "hour", "label": "时刻", "unit": "h"},
+            "statistics": statistics,
+            "series": series,
+            "rows": rows,
+            "files": {"state_workbook": str(workbook_path)},
+        }
+    finally:
+        wb.close()
+
+
 def optimization_result_payload(run_dir: Path | str, diag: dict[str, Any] | None = None, stats: dict[str, Any] | None = None) -> dict[str, Any]:
     run_path = Path(run_dir) if run_dir else Path()
     diag = diag or {}
@@ -1132,29 +1231,31 @@ def optimization_result_payload(run_dir: Path | str, diag: dict[str, Any] | None
     if not run_path.exists():
         return {"result_data": {}, "statistics": fallback_statistics(diag, stats), "result_files": []}
 
-    result_data_path = first_existing_path(diag.get("result_data"), run_path / RESULT_DATA_FILE_NAME)
-    statistics_path = first_existing_path(diag.get("result_statistics"), run_path / RESULT_STATISTICS_FILE_NAME)
-    csv_path = first_existing_path(diag.get("result_timeseries_csv"), run_path / RESULT_TIMESERIES_CSV_FILE_NAME)
     workbook_path = first_existing_path(diag.get("state_workbook"), newest_matching_file(run_path, "optimization_results_*.xlsx"))
-    summary_path = newest_matching_file(run_path, "bess_summary_*.md")
-
-    result_data = read_json(result_data_path, {}) if result_data_path else {}
-    statistics = read_json(statistics_path, {}) if statistics_path else {}
-    if not statistics and isinstance(result_data, dict):
-        statistics = result_data.get("statistics") or {}
-    if not statistics:
-        statistics = fallback_statistics(diag, stats)
-
-    files: list[dict[str, Any]] = []
-    for entry in (
-        file_entry(result_data_path, "完整结果JSON", "json") if result_data_path else None,
-        file_entry(statistics_path, "统计信息JSON", "json") if statistics_path else None,
-        file_entry(csv_path, "时序曲线CSV", "csv") if csv_path else None,
-        file_entry(workbook_path, "明细工作簿", "xlsx") if workbook_path else None,
-        file_entry(summary_path, "摘要报告", "markdown") if summary_path else None,
-    ):
-        if entry:
-            files.append(entry)
+    workbook_payload = read_optimization_result_workbook(workbook_path)
+    if workbook_payload:
+        result_data = workbook_payload
+        statistics = workbook_payload.get("statistics") or {}
+        files = [file_entry(workbook_path, "结果工作簿", "xlsx")] if workbook_path else []
+    else:
+        result_data_path = first_existing_path(diag.get("result_data"), run_path / RESULT_DATA_FILE_NAME)
+        statistics_path = first_existing_path(diag.get("result_statistics"), run_path / RESULT_STATISTICS_FILE_NAME)
+        csv_path = first_existing_path(diag.get("result_timeseries_csv"), run_path / RESULT_TIMESERIES_CSV_FILE_NAME)
+        result_data = read_json(result_data_path, {}) if result_data_path else {}
+        statistics = read_json(statistics_path, {}) if statistics_path else {}
+        if not statistics and isinstance(result_data, dict):
+            statistics = result_data.get("statistics") or {}
+        if not statistics:
+            statistics = fallback_statistics(diag, stats)
+        files = []
+        for entry in (
+            file_entry(workbook_path, "结果工作簿", "xlsx") if workbook_path else None,
+            file_entry(result_data_path, "历史结果JSON", "json") if result_data_path else None,
+            file_entry(statistics_path, "历史统计JSON", "json") if statistics_path else None,
+            file_entry(csv_path, "历史时序CSV", "csv") if csv_path else None,
+        ):
+            if entry:
+                files.append(entry)
 
     return {
         "result_data": result_data if isinstance(result_data, dict) else {},
@@ -1398,10 +1499,7 @@ class TaskManager:
         return cmd
 
     def _read_summary(self, run_dir: Path) -> str:
-        summaries = sorted(run_dir.glob("bess_summary_*.md"), key=lambda path: path.stat().st_mtime, reverse=True)
-        if not summaries:
-            return ""
-        return summaries[0].read_text(encoding="utf-8", errors="ignore")[:120000]
+        return ""
 
     def _read_stdout_logs(self, task: OptTask, limit: int = 600) -> list[dict[str, str]]:
         if not task.run_dir:
@@ -2261,7 +2359,7 @@ def task_board_result_info(task_type: str, task: dict[str, Any]) -> dict[str, st
         "verification": ("verification_timeseries.csv", "csv"),
     }
     default_name, default_kind = defaults.get(task_type, ("results.xlsx", "xlsx"))
-    preferred_exts = [".xlsx", ".csv", ".json"] if task_type == "optimization" else [".csv", ".json", ".xlsx"]
+    preferred_exts = [".xlsx"] if task_type == "optimization" else [".csv", ".json", ".xlsx"]
     for ext in preferred_exts:
         for item in task.get("result_files") or []:
             raw_path = str(item.get("path") or item.get("href") or item.get("name") or "")
@@ -2271,7 +2369,7 @@ def task_board_result_info(task_type: str, task: dict[str, Any]) -> dict[str, st
     folder_value = str(task.get(folder_key) or "")
     folder = Path(folder_value) if folder_value else None
     if folder and folder.exists():
-        patterns = ["*.xlsx", "*.csv", "*.json"] if task_type == "optimization" else ["verification_timeseries.csv", "verification.json", "*.xlsx"]
+        patterns = ["optimization_results_*.xlsx", "*.xlsx"] if task_type == "optimization" else ["verification_timeseries.csv", "verification.json", "*.xlsx"]
         for pattern in patterns:
             matches = sorted(folder.glob(pattern), key=lambda path: path.stat().st_mtime, reverse=True)
             if matches:
