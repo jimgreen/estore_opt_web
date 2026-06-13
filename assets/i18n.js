@@ -1,6 +1,6 @@
 const I18N = {
   zh: {
-    "brand": "考察站风-光-氢-储-柴联合规划系统",
+    "brand": "考察站风-光-氢-储-柴联合优化调度系统",
     "nav.home": "系统首页",
     "nav.schemes": "输入配置",
     "nav.solve": "优化求解",
@@ -11,7 +11,7 @@ const I18N = {
     "auth.logout": "退出",
     "auth.loginTitle": "登录",
     "auth.registerTitle": "注册",
-    "auth.loginIntro": "登录后进入储能优化调度系统。",
+    "auth.loginIntro": "登录后进入考察站风-光-氢-储-柴联合优化调度系统。",
     "auth.registerIntro": "创建本地账号。首个注册用户自动成为管理员。",
     "auth.username": "用户名",
     "auth.password": "密码",
@@ -22,7 +22,7 @@ const I18N = {
     "auth.toLogin": "已有账号？登录",
     "auth.passwordMismatch": "两次输入的密码不一致",
     "auth.failed": "操作失败",
-    "home.title": "考察站风-光-氢-储-柴联合规划系统",
+    "home.title": "考察站风-光-氢-储-柴联合优化调度系统",
     "home.language": "语言",
     "home.theme": "显示主题",
     "theme.aurora": "科幻蓝",
@@ -104,7 +104,7 @@ const I18N = {
     "form.maxParallel": "并行任务数"
   },
   en: {
-    "brand": "Station Wind-PV-Hydrogen-Storage-Diesel Planning",
+    "brand": "Station Wind-PV-Hydrogen-Storage-Diesel Optimal Dispatch System",
     "nav.home": "Home",
     "nav.schemes": "Input Config",
     "nav.solve": "Optimization",
@@ -115,7 +115,7 @@ const I18N = {
     "auth.logout": "Sign out",
     "auth.loginTitle": "Sign in",
     "auth.registerTitle": "Create account",
-    "auth.loginIntro": "Sign in to enter the energy storage optimization system.",
+    "auth.loginIntro": "Sign in to enter the station wind-PV-hydrogen-storage-diesel optimal dispatch system.",
     "auth.registerIntro": "Create a local account. The first user becomes administrator.",
     "auth.username": "Username",
     "auth.password": "Password",
@@ -126,7 +126,7 @@ const I18N = {
     "auth.toLogin": "Already have an account? Sign in",
     "auth.passwordMismatch": "The two passwords do not match",
     "auth.failed": "Operation failed",
-    "home.title": "Station Wind-PV-Hydrogen-Storage-Diesel Planning System",
+    "home.title": "Station Wind-PV-Hydrogen-Storage-Diesel Optimal Dispatch System",
     "home.language": "Language",
     "home.theme": "Theme",
     "theme.aurora": "Sci-Fi Blue",

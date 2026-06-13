@@ -4,16 +4,25 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+SYSTEM_TITLE = "考察站风-光-氢-储-柴联合优化调度系统"
 
 
 class HomePageStructureTests(unittest.TestCase):
     def test_home_page_has_config_selects_and_five_centered_modules(self):
         html = (ROOT / "index.html").read_text(encoding="utf-8-sig")
 
+        self.assertIn(f"<title>{SYSTEM_TITLE}</title>", html)
+        self.assertIn(f'>{SYSTEM_TITLE}</h1>', html)
         self.assertIn("data-language-select", html)
         self.assertIn("data-theme-select", html)
         self.assertIn('src="assets/theme.js"', html)
         self.assertEqual(len(re.findall(r'class="home-feature-entry"', html)), 5)
+
+    def test_i18n_uses_requested_system_title(self):
+        i18n = (ROOT / "assets" / "i18n.js").read_text(encoding="utf-8-sig")
+
+        self.assertIn(f'"brand": "{SYSTEM_TITLE}"', i18n)
+        self.assertIn(f'"home.title": "{SYSTEM_TITLE}"', i18n)
 
     def test_home_styles_center_last_two_modules_and_define_themes(self):
         css = (ROOT / "assets" / "app.css").read_text(encoding="utf-8-sig")
