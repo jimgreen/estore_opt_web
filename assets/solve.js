@@ -133,8 +133,8 @@ function renderOptimization() {
   const metrics = task?.metrics || row.metrics || {};
   const status = task?.status || row.status || "待启动";
   document.getElementById("optimizationStatus").textContent = status;
-  document.getElementById("optimizationStartTime").textContent = task?.start_time || row.start_time || "-";
-  document.getElementById("optimizationEndTime").textContent = task?.end_time || row.end_time || "-";
+  document.getElementById("optimizationStartTime").textContent = formatTimeOfDay(task?.start_time || row.start_time);
+  document.getElementById("optimizationEndTime").textContent = formatTimeOfDay(task?.end_time || row.end_time);
   document.getElementById("optimizationFuel").textContent = valueWithUnit(metrics.fuel_kg, "kg");
   document.getElementById("optimizationGap").textContent = fmt(metrics.gap);
   updateActionButtons(status, row);
@@ -215,13 +215,13 @@ function renderOverview(task, metrics) {
     ["任务ID", task?.id || "-"],
     ["方案", state.currentScheme || "-"],
     ["任务状态", taskStatus],
-    ["开始时间", task?.start_time || currentRow.start_time || "-"],
-    ["完成时间", task?.end_time || currentRow.end_time || "-"],
+    ["开始时间", formatTimeOfDay(task?.start_time || currentRow.start_time)],
+    ["完成时间", formatTimeOfDay(task?.end_time || currentRow.end_time)],
     ["输出目录", task?.run_dir || "-"],
   ];
   document.getElementById("overviewResult").innerHTML = `
     <div class="result-overview-workbench">
-      <div class="result-kpi-grid" aria-label="优化求解关键指标">
+      <div class="result-kpi-grid" aria-label="优化调度关键指标">
         ${kpis.map(([title, value, caption, tone]) => renderKpiCard(title, value, caption, tone)).join("")}
       </div>
       <div class="result-section-grid">
@@ -470,7 +470,7 @@ async function clearOptimizationLogs() {
 }
 
 function saveOptimizationLogs() {
-  saveLogsToFile(state.currentLogs || [], `优化求解_${state.currentScheme || "未选择方案"}_运行日志`);
+  saveLogsToFile(state.currentLogs || [], `优化调度_${state.currentScheme || "未选择方案"}_运行日志`);
 }
 
 function bindLogContextMenu({ boxId, emptyText, clearLogs, saveLogs }) {

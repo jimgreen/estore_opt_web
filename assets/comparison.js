@@ -97,7 +97,7 @@ function renderComparisonSlots() {
   const target = document.getElementById("comparisonSlotRail");
   if (!target) return;
   if (!comparisonState.items.length) {
-    target.innerHTML = `<div class="comparison-empty">暂无可对比结果，请先完成优化求解或方案校核。</div>`;
+    target.innerHTML = `<div class="comparison-empty">暂无可对比结果，请先完成优化调度或方案校核。</div>`;
     return;
   }
   if (!comparisonState.selectedIds.length) {

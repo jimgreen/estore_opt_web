@@ -36,6 +36,14 @@ function fmt(value, digits = 3) {
   return num.toFixed(digits).replace(/\.?0+$/, "");
 }
 
+window.formatTimeOfDay = function formatTimeOfDay(value) {
+  const text = String(value ?? "").trim();
+  if (!text || text === "-") return "-";
+  const match = text.match(/(?:^|\D)(\d{1,2}:\d{2}:\d{2})(?:\.\d+)?(?:$|\D)/);
+  if (match) return match[1].padStart(8, "0");
+  return text;
+};
+
 function statusClass(status) {
   if (["计算中", "准备启动"].includes(status)) return "running";
   if (status === "排队中") return "queued";

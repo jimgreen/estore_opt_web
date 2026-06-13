@@ -70,14 +70,20 @@ const verifyState = {
   selectedId: "",
   selectedItem: null,
   curveMode: "power",
+  activeResultTab: "logs",
   timer: 0,
 };
 
 document.addEventListener("DOMContentLoaded", () => {
+  bindVerificationResultTabs();
   document.getElementById("verifyForm")?.addEventListener("submit", startVerification);
   document.getElementById("queueVerificationTask")?.addEventListener("click", queueVerification);
   document.getElementById("stopVerificationTask")?.addEventListener("click", cancelSelectedVerification);
   document.getElementById("cancelVerificationTask")?.addEventListener("click", cancelSelectedVerification);
+  document.getElementById("reloadVerificationSchemes")?.addEventListener("click", () => loadSchemes(currentScheme()).catch(showVerifyError));
+  document.getElementById("copyVerificationScheme")?.addEventListener("click", copyCurrentVerificationScheme);
+  document.getElementById("deleteVerificationScheme")?.addEventListener("click", deleteCurrentVerificationScheme);
+  document.getElementById("renameVerificationScheme")?.addEventListener("click", renameCurrentVerificationScheme);
   document.getElementById("reloadDispatchSchedule")?.addEventListener("click", () => loadDispatchSchedule().catch(showVerifyError));
   document.getElementById("initDispatchSchedule")?.addEventListener("click", initializeDispatchSchedule);
   document.getElementById("saveDispatchSchedule")?.addEventListener("click", saveDispatchSchedule);
@@ -98,6 +104,26 @@ async function initializeVerifyPage() {
   await loadVerifications();
 }
 
+function bindVerificationResultTabs() {
+  document.querySelectorAll("[data-verification-result-tab]").forEach((button) => {
+    button.addEventListener("click", () => switchVerificationResultTab(button.dataset.verificationResultTab || "logs"));
+  });
+}
+
+function switchVerificationResultTab(tab) {
+  verifyState.activeResultTab = tab;
+  document.querySelectorAll("[data-verification-result-tab]").forEach((button) => {
+    const active = button.dataset.verificationResultTab === tab;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  document.querySelectorAll("[data-verification-result-panel]").forEach((panel) => {
+    const active = panel.dataset.verificationResultPanel === tab;
+    panel.classList.toggle("active", active);
+    panel.hidden = !active;
+  });
+}
+
 async function loadSchemes(preferredScheme = "") {
   const payload = await api("/api/schemes");
   verifyState.schemes = payload.schemes || [];
@@ -109,11 +135,112 @@ async function loadSchemes(preferredScheme = "") {
     select.innerHTML = verifyState.schemes.map((scheme) => `<option value="${escapeHtml(scheme.name)}">${escapeHtml(scheme.name)}</option>`).join("");
     select.value = selected;
   }
+  renderVerificationSchemes();
+  renderVerificationControlState();
   if (selected) await loadDispatchSchedule(selected);
 }
 
 function currentScheme() {
   return document.querySelector("#verifyForm select[name='scheme']")?.value || "";
+}
+
+function latestVerificationForScheme(scheme) {
+  return (verifyState.verifications || []).find((item) => item.scheme === scheme) || null;
+}
+
+function renderVerificationSchemes() {
+  const target = document.getElementById("verificationSchemeList");
+  if (!target) return;
+  if (!verifyState.schemes.length) {
+    target.innerHTML = `<div class="verification-empty">暂无方案，请先在输入配置中创建方案。</div>`;
+    return;
+  }
+  const selected = currentScheme();
+  target.innerHTML = verifyState.schemes.map((scheme) => {
+    const active = scheme.name === selected;
+    const latest = latestVerificationForScheme(scheme.name);
+    const hasDispatch = Boolean(scheme.dispatch_schedule_exists);
+    const stamp = scheme.dispatch_schedule_mtime || scheme.updated_at || scheme.file_mtime || "";
+    const resultText = latest ? `${latest.status} · ${latest.created_at || ""}` : "暂无校核结果";
+    return `
+      <button class="verification-scheme-item ${active ? "active" : ""}" type="button" data-scheme="${escapeHtml(scheme.name)}" role="option" aria-selected="${active ? "true" : "false"}">
+        <span class="verification-tree-branch" aria-hidden="true"></span>
+        <span class="scheme-tree-icon folder" aria-hidden="true"></span>
+        <strong>${escapeHtml(scheme.name)}</strong>
+        <em>${escapeHtml(stamp)}</em>
+        <small class="${hasDispatch ? "ready" : ""}">${escapeHtml(hasDispatch ? resultText : "缺少调度文件")}</small>
+      </button>
+    `;
+  }).join("");
+  target.querySelectorAll("[data-scheme]").forEach((button) => {
+    button.addEventListener("click", () => selectVerificationScheme(button.dataset.scheme || ""));
+  });
+}
+
+async function selectVerificationScheme(scheme) {
+  if (!scheme) return;
+  const select = document.querySelector("#verifyForm select[name='scheme']");
+  if (select) select.value = scheme;
+  const latest = latestVerificationForScheme(scheme);
+  verifyState.selectedId = latest?.id || "";
+  verifyState.selectedItem = latest || null;
+  renderVerificationSchemes();
+  renderVerificationList();
+  renderVerificationControlState(latest || null);
+  await loadDispatchSchedule(scheme);
+  if (latest?.id) {
+    await loadVerificationDetail(latest.id);
+  } else {
+    renderVerificationEmpty();
+  }
+}
+
+async function copyCurrentVerificationScheme() {
+  const source = currentScheme();
+  if (!source) return;
+  const name = window.prompt("请输入复制后的方案名称", `${source}_副本`);
+  if (!name || !name.trim()) return;
+  try {
+    const payload = await api("/api/schemes/copy", {
+      method: "POST",
+      body: JSON.stringify({ source, name: name.trim(), description: `由 ${source} 复制` }),
+    });
+    await loadSchemes(payload.scheme?.name || name.trim());
+  } catch (error) {
+    showVerifyError(error);
+  }
+}
+
+async function deleteCurrentVerificationScheme() {
+  const scheme = currentScheme();
+  if (!scheme) return;
+  if (!window.confirm(`确定删除方案“${scheme}”？此操作会删除该方案目录下的参数、调度文件和相关配置。`)) return;
+  try {
+    await api(`/api/schemes?name=${encodeURIComponent(scheme)}`, { method: "DELETE" });
+    verifyState.selectedId = "";
+    verifyState.selectedItem = null;
+    await loadSchemes("");
+    await loadVerifications();
+  } catch (error) {
+    showVerifyError(error);
+  }
+}
+
+async function renameCurrentVerificationScheme() {
+  const source = currentScheme();
+  if (!source) return;
+  const name = window.prompt("请输入新的方案名称", source);
+  if (!name || !name.trim() || name.trim() === source) return;
+  try {
+    const payload = await api("/api/schemes/update", {
+      method: "POST",
+      body: JSON.stringify({ source, name: name.trim() }),
+    });
+    await loadSchemes(payload.scheme?.name || name.trim());
+    await loadVerifications();
+  } catch (error) {
+    showVerifyError(error);
+  }
 }
 
 async function loadDispatchSchedule(scheme = currentScheme()) {
@@ -131,6 +258,8 @@ async function loadDispatchSchedule(scheme = currentScheme()) {
 function renderDispatchSchedule() {
   renderDispatchStatus();
   renderDispatchScheduleTable();
+  renderVerificationSchemes();
+  renderVerificationControlState(verifyState.selectedItem);
 }
 
 function renderDispatchStatus() {
@@ -147,6 +276,27 @@ function renderDispatchStatus() {
     const fileName = dispatch.path ? dispatch.path.split(/[\\/]/).pop() : "dispatch_schedule.xlsx";
     meta.textContent = dispatch.exists ? `${dispatch.scheme} · ${fileName} · ${dispatch.row_count || 0} 行` : `${dispatch.scheme} 尚无独立调度控制曲线文件。`;
   }
+}
+
+function renderVerificationControlState(item = verifyState.selectedItem) {
+  const scheme = currentScheme();
+  const current = document.getElementById("verificationCurrentScheme");
+  const status = document.getElementById("verificationStatus");
+  const start = document.getElementById("verificationStartTime");
+  const end = document.getElementById("verificationEndTime");
+  const fuel = document.getElementById("verificationFuelMetric");
+  const renewable = document.getElementById("verificationRenewableMetric");
+  if (current) current.textContent = scheme || "未选择方案";
+  const relevantItem = item && (!scheme || item.scheme === scheme) ? item : latestVerificationForScheme(scheme);
+  const metrics = relevantItem?.metrics || {};
+  const diesel = metrics.diesel || {};
+  const renewableMetrics = metrics.renewable || {};
+  if (status) status.textContent = relevantItem?.status || "未计算";
+  if (start) start.textContent = formatTimeOfDay(relevantItem?.start_time || relevantItem?.created_at || "");
+  if (end) end.textContent = formatTimeOfDay(relevantItem?.end_time || "");
+  if (fuel) fuel.textContent = diesel.fuel_kg === undefined ? "-" : `${fmt(diesel.fuel_kg, 3)} kg`;
+  const useKwh = sumValues(renewableMetrics.pv_use_kwh, renewableMetrics.wt_use_kwh);
+  if (renewable) renewable.textContent = useKwh === null ? "-" : `${fmt(useKwh, 3)} kWh`;
 }
 
 function renderDispatchScheduleTable() {
@@ -398,7 +548,11 @@ async function loadVerifications() {
   try {
     const payload = await api("/api/verification");
     applyVerifications(payload.verifications || []);
-    if (verifyState.selectedId) await loadVerificationDetail(verifyState.selectedId);
+    if (verifyState.selectedId) {
+      await loadVerificationDetail(verifyState.selectedId);
+    } else {
+      renderVerificationEmpty();
+    }
   } catch (error) {
     showVerifyError(error);
   }
@@ -406,21 +560,26 @@ async function loadVerifications() {
 
 function applyVerifications(items) {
   verifyState.verifications = items;
-  if (!verifyState.selectedId && items[0]) verifyState.selectedId = items[0].id;
+  if (!verifyState.selectedId) {
+    const latestForCurrent = latestVerificationForScheme(currentScheme());
+    verifyState.selectedId = latestForCurrent?.id || items[0]?.id || "";
+  }
   renderVerificationList();
+  renderVerificationSchemes();
+  renderVerificationControlState(verifyState.selectedItem);
 }
 
 function renderVerificationList() {
   const target = document.getElementById("verificationList");
   if (!target) return;
   if (!verifyState.verifications.length) {
-    target.innerHTML = `<div class="task-item"><strong>暂无校核任务</strong><span>启动方案校核后会显示在这里。</span></div>`;
+    target.innerHTML = `<div class="verification-task-empty">暂无校核任务，启动后会在这里显示。</div>`;
     return;
   }
   target.innerHTML = verifyState.verifications.map((item) => `
-    <button class="task-item ${item.id === verifyState.selectedId ? "active" : ""}" type="button" data-id="${escapeHtml(item.id)}">
+    <button class="verification-task-chip ${item.id === verifyState.selectedId ? "active" : ""}" type="button" data-id="${escapeHtml(item.id)}">
       <strong>${escapeHtml(item.scheme)}</strong>
-      <span>${escapeHtml(item.created_at)} · ${escapeHtml(item.config?.mode || "")}</span>
+      <span>${escapeHtml(formatTimeOfDay(item.created_at))} · ${escapeHtml(item.config?.mode || "")}</span>
       <span class="status-pill ${verificationStatusClass(item.status)}">${escapeHtml(item.status)}</span>
     </button>
   `).join("");
@@ -437,14 +596,37 @@ async function loadVerificationDetail(id) {
   if (!id) return;
   const item = await api(`/api/verification/item?id=${encodeURIComponent(id)}`);
   verifyState.selectedItem = item;
+  const select = document.querySelector("#verifyForm select[name='scheme']");
+  if (select && item.scheme && select.value !== item.scheme && verifyState.schemes.some((scheme) => scheme.name === item.scheme)) {
+    select.value = item.scheme;
+    await loadDispatchSchedule(item.scheme);
+  }
   document.getElementById("verificationTitle").textContent = `${item.scheme} · ${item.status}`;
   document.getElementById("stopVerificationTask").disabled = !item.can_cancel;
   document.getElementById("cancelVerificationTask").disabled = !item.can_cancel;
+  renderVerificationControlState(item);
+  renderVerificationSchemes();
+  renderVerificationList();
   renderVerificationMetrics(item.metrics || {});
   document.getElementById("verificationSummary").textContent = item.summary_text || item.latest_log || "暂无摘要。";
   const rows = item.rows || item.rows_preview || [];
   renderVerificationCurves(rows);
   renderVerificationRows(rows);
+}
+
+function renderVerificationEmpty() {
+  verifyState.selectedItem = null;
+  const title = document.getElementById("verificationTitle");
+  if (title) title.textContent = "校核详情";
+  document.getElementById("stopVerificationTask").disabled = true;
+  document.getElementById("cancelVerificationTask").disabled = true;
+  renderVerificationControlState(null);
+  renderVerificationMetrics({});
+  document.getElementById("verificationSummary").textContent = currentScheme()
+    ? "当前方案暂无校核结果。可以启动校核，或先从优化结果生成/保存调度控制曲线。"
+    : "请选择方案或启动一个校核任务。";
+  renderVerificationCurves([]);
+  renderVerificationRows([]);
 }
 
 async function cancelSelectedVerification() {

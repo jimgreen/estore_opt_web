@@ -37,7 +37,7 @@ class TaskBoardTests(unittest.TestCase):
         opt_row = server.task_board_rows("optimization", schemes, {})[0]
         verify_row = server.task_board_rows("verification", schemes, {})[0]
 
-        self.assertEqual(opt_row["result_name"], "opt_results.xlsx")
+        self.assertEqual(opt_row["result_name"], "opt_result.xlsx")
         self.assertEqual(verify_row["result_name"], "verification_timeseries.csv")
 
 

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>优化求解 - 考察站风-光-氢-储-柴联合优化调度系统</title>
+  <title>优化调度 - 考察站风-光-氢-储-柴联合优化调度系统</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="assets/app.css">
 </head>
@@ -14,7 +14,7 @@
       <nav class="main-nav" aria-label="主功能导航">
         <a href="index.html" data-i18n="nav.home">系统首页</a>
         <a href="schemes.html" data-i18n="nav.schemes">输入配置</a>
-        <a class="active" href="solve.html" data-i18n="nav.solve">优化求解</a>
+        <a class="active" href="solve.html" data-i18n="nav.solve">优化调度</a>
         <a href="verify.html" data-i18n="nav.verify">方案校核</a>
         <a href="comparison.html" data-i18n="nav.comparison">结果对比</a>
         <a href="batch.html" data-i18n="nav.batch">批量计算</a>
@@ -40,12 +40,12 @@
           <div id="solveError" class="status-error" hidden></div>
           <div class="optimization-command-row">
             <div id="optimizationCurrentScheme" class="optimization-current-scheme">当前: 未选择方案</div>
-            <div class="optimization-actions" aria-label="优化求解操作">
+            <div class="optimization-actions" aria-label="优化调度操作">
               <button id="startOptimization" class="primary" type="button">启动</button>
               <button id="queueOptimization" class="queue-action" type="button">排队</button>
               <button id="stopOptimization" class="danger" type="button">停止</button>
             </div>
-            <div class="optimization-status-grid" aria-label="优化求解总体指标">
+            <div class="optimization-status-grid" aria-label="优化调度总体指标">
               <div class="status-tile"><span>状态</span><strong id="optimizationStatus">待启动</strong></div>
               <div class="status-tile"><span>开始</span><strong id="optimizationStartTime">-</strong></div>
               <div class="status-tile"><span>完成</span><strong id="optimizationEndTime">-</strong></div>
@@ -56,7 +56,7 @@
         </section>
 
         <section class="optimization-result-card">
-          <div class="result-tabs" role="tablist" aria-label="优化求解结果切换">
+          <div class="result-tabs" role="tablist" aria-label="优化调度结果切换">
             <button id="optimizationLogViewToggle" class="result-tab" data-result-tab="logs" type="button" aria-selected="false">运行日志</button>
             <button class="result-tab active" data-result-tab="overview" type="button" aria-selected="true">结果总览</button>
             <button id="optimizationCurveViewToggle" class="result-tab" data-result-tab="curves" type="button" aria-selected="false">曲线展示</button>

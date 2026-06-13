@@ -60,6 +60,7 @@ COMPUTE_CONFIG_FILE_NAME = "compute_config.json"
 RESULT_DATA_FILE_NAME = "optimization_result_data.json"
 RESULT_STATISTICS_FILE_NAME = "optimization_statistics.json"
 RESULT_TIMESERIES_CSV_FILE_NAME = "optimization_timeseries.csv"
+OPT_RESULT_FILE_NAME = "opt_result.xlsx"
 DISPATCH_SCHEDULE_FILE_NAME = "dispatch_schedule.xlsx"
 COMPUTE_CONFIG_SHEET_NAME = "计算参数"
 DISPATCH_SCHEDULE_SHEET_NAME = "调度控制曲线"
@@ -1231,7 +1232,7 @@ def optimization_result_payload(run_dir: Path | str, diag: dict[str, Any] | None
     if not run_path.exists():
         return {"result_data": {}, "statistics": fallback_statistics(diag, stats), "result_files": []}
 
-    workbook_path = first_existing_path(diag.get("state_workbook"), newest_matching_file(run_path, "optimization_results_*.xlsx"))
+    workbook_path = first_existing_path(diag.get("state_workbook"), run_path / OPT_RESULT_FILE_NAME, newest_matching_file(run_path, "optimization_results_*.xlsx"))
     workbook_payload = read_optimization_result_workbook(workbook_path)
     if workbook_payload:
         result_data = workbook_payload
@@ -1372,7 +1373,7 @@ class TaskManager:
             task = self.tasks[task_id]
             task.status = "计算中"
             task.start_time = now_text()
-            task.latest_log = timestamp_log_line("准备优化求解输入文件")
+            task.latest_log = timestamp_log_line("准备优化调度输入文件")
         start = time.time()
         try:
             run_dir = RUN_ROOT / task_id
@@ -1494,7 +1495,7 @@ class TaskManager:
             "--progress-json",
             str(progress_json),
             "--output-dir",
-            str(run_dir),
+            str(scheme_dir(task.scheme)),
         ]
         return cmd
 
@@ -2355,7 +2356,7 @@ def task_board_snapshot() -> dict[str, Any]:
 
 def task_board_result_info(task_type: str, task: dict[str, Any]) -> dict[str, str]:
     defaults = {
-        "optimization": ("opt_results.xlsx", "xlsx"),
+        "optimization": (OPT_RESULT_FILE_NAME, "xlsx"),
         "verification": ("verification_timeseries.csv", "csv"),
     }
     default_name, default_kind = defaults.get(task_type, ("results.xlsx", "xlsx"))
@@ -2369,7 +2370,7 @@ def task_board_result_info(task_type: str, task: dict[str, Any]) -> dict[str, st
     folder_value = str(task.get(folder_key) or "")
     folder = Path(folder_value) if folder_value else None
     if folder and folder.exists():
-        patterns = ["optimization_results_*.xlsx", "*.xlsx"] if task_type == "optimization" else ["verification_timeseries.csv", "verification.json", "*.xlsx"]
+        patterns = [OPT_RESULT_FILE_NAME, "optimization_results_*.xlsx", "*.xlsx"] if task_type == "optimization" else ["verification_timeseries.csv", "verification.json", "*.xlsx"]
         for pattern in patterns:
             matches = sorted(folder.glob(pattern), key=lambda path: path.stat().st_mtime, reverse=True)
             if matches:
@@ -2388,7 +2389,7 @@ def task_board_rows(task_type: str, schemes: list[dict[str, Any]], latest: dict[
         status = str(task.get("status") or "未计算")
         active = status in {"排队中", "准备启动", "计算中", "校核中"}
         queued = status == "排队中"
-        task_type_label = "优化求解" if task_type == "optimization" else "方案校核"
+        task_type_label = "优化调度" if task_type == "optimization" else "方案校核"
         rows.append(
             {
                 "id": f"{task_type}::{name}",
@@ -2498,7 +2499,7 @@ def optimization_comparison_items() -> list[dict[str, Any]]:
                 "id": f"opt:{folder.name}",
                 "raw_id": folder.name,
                 "type": "optimization",
-                "type_label": "优化求解",
+                "type_label": "优化调度",
                 "scheme": manifest.get("scheme") or fallback_scheme_name(folder),
                 "status": diag.get("status") or "",
                 "success": diag.get("success"),
@@ -2540,7 +2541,7 @@ def optimization_comparison_items() -> list[dict[str, Any]]:
                         "id": f"opt:{task.id}",
                         "raw_id": task.id,
                         "type": "optimization",
-                        "type_label": "优化求解",
+                        "type_label": "优化调度",
                         "scheme": task.scheme,
                         "status": task.status,
                         "success": task.status == "完成计算",

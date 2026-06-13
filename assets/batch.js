@@ -1,5 +1,5 @@
 const BATCH_TASK_PAGES = [
-  { key: "optimization", label: "优化求解任务", empty: "暂无优化求解任务。" },
+  { key: "optimization", label: "优化调度任务", empty: "暂无优化调度任务。" },
   { key: "verification", label: "方案校核任务", empty: "暂无方案校核任务。" },
   { key: "all", label: "全部任务", empty: "暂无任务。" },
 ];
@@ -181,8 +181,8 @@ function renderTaskRow(task) {
       </td>
       <td><span class="status-pill ${boardStatusClass(task.status)}">${escapeHtml(task.status || "未计算")}</span></td>
       <td>${escapeHtml(task.process_id || "-")}</td>
-      <td>${escapeHtml(task.start_time || "-")}</td>
-      <td>${escapeHtml(task.end_time || "-")}</td>
+      <td>${escapeHtml(formatTimeOfDay(task.start_time))}</td>
+      <td>${escapeHtml(formatTimeOfDay(task.end_time))}</td>
       <td>${escapeHtml(fmt(task.elapsed_seconds || 0, 3))}</td>
       <td class="batch-log-cell" title="${escapeHtml(task.latest_log || "")}">${escapeHtml(task.latest_log || "-")}</td>
     </tr>
@@ -190,7 +190,7 @@ function renderTaskRow(task) {
 }
 
 function defaultResultName(task) {
-  return task.task_type_key === "verification" ? "verification_timeseries.csv" : "opt_results.xlsx";
+  return task.task_type_key === "verification" ? "verification_timeseries.csv" : "opt_result.xlsx";
 }
 
 function pageConfig(key) {

@@ -8,13 +8,13 @@
   <link rel="stylesheet" href="assets/app.css">
 </head>
 <body>
-  <main class="app-shell">
+  <main class="app-shell verification-app-shell">
     <header class="topbar">
       <a class="brand" href="index.html" data-i18n="brand">考察站风-光-氢-储-柴联合优化调度系统</a>
       <nav class="main-nav" aria-label="主功能导航">
         <a href="index.html" data-i18n="nav.home">系统首页</a>
         <a href="schemes.html" data-i18n="nav.schemes">输入配置</a>
-        <a href="solve.html" data-i18n="nav.solve">优化求解</a>
+        <a href="solve.html" data-i18n="nav.solve">优化调度</a>
         <a class="active" href="verify.html" data-i18n="nav.verify">方案校核</a>
         <a href="comparison.html" data-i18n="nav.comparison">结果对比</a>
         <a href="batch.html" data-i18n="nav.batch">批量计算</a>
@@ -28,93 +28,116 @@
       </div>
     </header>
 
-    <section class="workspace">
-      <div id="verifyError" class="status-error" hidden></div>
-      <section class="command-panel">
-        <div>
-          <span class="section-label" data-i18n="verify.subtitle">后验精度评估</span>
-          <h1 data-i18n="verify.title">方案校核</h1>
-        </div>
-        <form id="verifyForm" class="inline-form solve-start-form">
-          <label><span data-i18n="form.scheme">方案</span><select name="scheme" required></select></label>
-          <span class="sheet-meta">校核读取方案目录下独立的 dispatch_schedule.xlsx，以设备控制曲线为输入进行时域仿真。</span>
-          <div class="form-actions">
-            <button class="primary" type="submit" data-i18n="verify.start">开始</button>
-            <button id="queueVerificationTask" type="button">排队</button>
-            <button id="stopVerificationTask" class="danger" type="button" disabled>停止</button>
-          </div>
-        </form>
-      </section>
+    <section class="verification-workspace">
+      <div id="verifyError" class="status-error verification-error" hidden></div>
 
-      <section class="dispatch-panel main-panel">
-        <div class="panel-head">
-          <div>
-            <span class="section-label">独立方案文件</span>
-            <h2>调度控制曲线</h2>
-          </div>
-          <div class="summary-actions">
-            <button id="reloadDispatchSchedule" class="small" type="button">重载</button>
-            <button id="initDispatchSchedule" class="small" type="button">生成空白调度文件</button>
-            <button id="saveDispatchSchedule" class="primary small" type="button">保存调度文件</button>
-          </div>
+      <aside class="verification-scheme-rail">
+        <div class="verification-rail-head">
+          <h1>方案列表</h1>
+          <button id="reloadVerificationSchemes" class="small" type="button">刷新</button>
         </div>
-        <div class="dispatch-toolbar">
-          <div class="dispatch-status">
-            <strong id="dispatchFileState">未加载</strong>
-            <span id="dispatchFileMeta">请选择方案。</span>
-          </div>
-          <label>
-            <span>优化结果</span>
-            <select id="optimizationTaskSelect"></select>
-          </label>
-          <label>
-            <span>新方案名称</span>
-            <input id="dispatchSchemeName" type="text" placeholder="例如：方案A_校核调度">
-          </label>
-          <label>
-            <span>方案说明</span>
-            <input id="dispatchSchemeDescription" type="text" placeholder="可选">
-          </label>
-          <div class="dispatch-actions">
-            <button id="createDispatchScheme" type="button">从优化结果生成新方案</button>
-            <button id="saveDispatchAsScheme" type="button">另存当前调度为新方案</button>
-          </div>
+        <div id="verificationSchemeList" class="verification-scheme-list" role="listbox" aria-label="校核方案列表"></div>
+        <section class="verification-rail-summary">
+          <span>当前调度</span>
+          <strong id="dispatchFileState">未加载</strong>
+          <em id="dispatchFileMeta">请选择方案。</em>
+        </section>
+        <div class="verification-rail-actions">
+          <button id="copyVerificationScheme" type="button">复制</button>
+          <button id="deleteVerificationScheme" class="danger" type="button">删除</button>
+          <button id="renameVerificationScheme" type="button">修改</button>
         </div>
-        <div id="dispatchScheduleTable" class="data-table dispatch-table"></div>
-      </section>
+      </aside>
 
-      <section class="result-layout">
-        <aside class="side-panel compact">
-          <h2 data-i18n="verify.tasks">校核任务</h2>
-          <div id="verificationList" class="task-list"></div>
-        </aside>
-        <section class="main-panel">
-          <div class="panel-head">
-            <h2 id="verificationTitle">校核详情</h2>
-            <div class="summary-actions">
-              <button id="cancelVerificationTask" class="danger small" type="button" disabled>停止/离队</button>
-            </div>
-          </div>
-          <div id="verificationMetrics" class="metric-grid"></div>
-          <section id="verificationCurvePanel" class="verification-curve-panel" hidden>
-            <div class="curve-chart-toolbar">
-              <div class="curve-chart-title">
-                <h2 id="verificationCurveTitle">时序曲线</h2>
-                <span id="verificationCurveMeta">选择校核任务后显示完整曲线。</span>
+      <section class="verification-workbench">
+        <section class="verification-control-card">
+          <form id="verifyForm" class="verification-control-form">
+            <select name="scheme" required hidden aria-label="方案"></select>
+            <div class="verification-command-row">
+              <div class="verification-current">
+                <span>当前</span>
+                <strong id="verificationCurrentScheme">未选择方案</strong>
               </div>
-              <div id="verificationCurveTabs" class="verification-curve-tabs" aria-label="校核曲线切换"></div>
+              <div class="verification-actions">
+                <button class="primary" type="submit" data-i18n="verify.start">启动</button>
+                <button id="queueVerificationTask" type="button">排队</button>
+                <button id="stopVerificationTask" class="danger" type="button" disabled>停止</button>
+              </div>
+              <div class="verification-status-grid">
+                <div class="verification-status-cell"><span>状态</span><strong id="verificationStatus">未计算</strong></div>
+                <div class="verification-status-cell"><span>开始</span><strong id="verificationStartTime">-</strong></div>
+                <div class="verification-status-cell"><span>完成</span><strong id="verificationEndTime">-</strong></div>
+                <div class="verification-status-cell"><span>柴油耗油</span><strong id="verificationFuelMetric">-</strong></div>
+                <div class="verification-status-cell"><span>新能源消纳</span><strong id="verificationRenewableMetric">-</strong></div>
+              </div>
             </div>
-            <svg id="verificationCurveSvg" class="curve-svg verification-curve-svg" viewBox="0 0 960 360" role="img" aria-label="方案校核时序曲线"></svg>
-          </section>
-          <div class="split-results">
-            <div>
-              <h3 data-i18n="verify.summary">校核摘要</h3>
-              <pre id="verificationSummary" class="summary-box">请选择或启动一个校核任务。</pre>
+
+            <div class="verification-dispatch-controls">
+              <label>
+                <span>优化结果</span>
+                <select id="optimizationTaskSelect"></select>
+              </label>
+              <label>
+                <span>新方案名称</span>
+                <input id="dispatchSchemeName" type="text" placeholder="例如：方案A_校核调度">
+              </label>
+              <label>
+                <span>方案说明</span>
+                <input id="dispatchSchemeDescription" type="text" placeholder="可选">
+              </label>
+              <div class="verification-dispatch-actions">
+                <button id="reloadDispatchSchedule" type="button">重载</button>
+                <button id="initDispatchSchedule" type="button">生成空白</button>
+                <button id="saveDispatchSchedule" class="primary" type="button">保存调度</button>
+                <button id="createDispatchScheme" type="button">从优化结果生成</button>
+                <button id="saveDispatchAsScheme" type="button">另存方案</button>
+              </div>
             </div>
-            <div>
-              <h3 data-i18n="verify.rows">逐时刻偏差预览</h3>
-              <div id="verificationRows" class="data-table"></div>
-            </div>
+
+            <section class="verification-dispatch-editor">
+              <div class="verification-dispatch-editor-head">
+                <strong>调度控制曲线</strong>
+                <span>设备控制曲线作为时域仿真的输入，可直接编辑并保存。</span>
+              </div>
+              <div id="dispatchScheduleTable" class="data-table dispatch-table"></div>
+            </section>
+          </form>
+        </section>
+
+        <section class="verification-result-card">
+          <div class="result-tabs verification-result-tabs" role="tablist" aria-label="方案校核结果切换">
+            <button class="result-tab active" data-verification-result-tab="logs" type="button" aria-selected="true">运行日志</button>
+            <button class="result-tab" data-verification-result-tab="stats" type="button" aria-selected="false">统计表格</button>
+            <button class="result-tab" data-verification-result-tab="curves" type="button" aria-selected="false">时刻曲线</button>
+          </div>
+          <div id="verificationList" class="verification-task-strip" aria-label="校核任务列表"></div>
+
+          <div class="verification-result-body">
+            <section class="verification-result-panel active verification-log-panel" data-verification-result-panel="logs" role="tabpanel">
+              <div class="verification-section-head">
+                <h2 id="verificationTitle">校核详情</h2>
+                <button id="cancelVerificationTask" class="danger small" type="button" disabled>停止/离队</button>
+              </div>
+              <pre id="verificationSummary" class="summary-box verification-log-box">请选择方案或启动一个校核任务。</pre>
+            </section>
+
+            <section class="verification-result-panel verification-stats-panel" data-verification-result-panel="stats" role="tabpanel" hidden>
+              <div id="verificationMetrics" class="metric-grid verification-metric-grid"></div>
+              <div id="verificationRows" class="data-table verification-rows-table"></div>
+            </section>
+
+            <section class="verification-result-panel verification-curves-panel" data-verification-result-panel="curves" role="tabpanel" hidden>
+              <section id="verificationCurvePanel" class="verification-curve-panel" hidden>
+                <div class="curve-chart-toolbar">
+                  <div class="curve-chart-title">
+                    <h2 id="verificationCurveTitle">时序曲线</h2>
+                    <span id="verificationCurveMeta">选择校核任务后显示完整曲线。</span>
+                  </div>
+                  <div id="verificationCurveTabs" class="verification-curve-tabs" aria-label="校核曲线切换"></div>
+                </div>
+                <svg id="verificationCurveSvg" class="curve-svg verification-curve-svg" viewBox="0 0 960 360" role="img" aria-label="方案校核时序曲线"></svg>
+              </section>
+            </section>
           </div>
         </section>
       </section>

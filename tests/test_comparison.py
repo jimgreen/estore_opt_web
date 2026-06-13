@@ -19,7 +19,7 @@ class ComparisonTableTests(unittest.TestCase):
                 {
                     "id": "opt:a",
                     "type": "optimization",
-                    "type_label": "优化求解",
+                    "type_label": "优化调度",
                     "scheme": "A",
                     "metrics": {"fuel_kg": 3.0},
                 },
@@ -33,7 +33,7 @@ class ComparisonTableTests(unittest.TestCase):
                 {
                     "id": "opt:c",
                     "type": "optimization",
-                    "type_label": "优化求解",
+                    "type_label": "优化调度",
                     "scheme": "C",
                     "metrics": {"fuel_kg": 1.0},
                 },

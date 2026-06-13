@@ -32,6 +32,14 @@ const DIESEL_GENERATOR_SHEET_NAME = "柴油发电机";
 const CELL_RESISTANCE_SHEET_NAME = "电芯内阻";
 const CELL_OCV_SHEET_NAME = "电芯OCV";
 const OPERATION_CURVE_SHEET_NAME = "运行曲线";
+const SHEET_TAB_LABELS = {
+  "柴油发电机": "柴发",
+  "风电机组": "风电",
+  "光伏机组": "光伏",
+  "电芯电流限值": "电芯电流",
+  "配电模块": "配电",
+  "液冷系统": "液冷",
+};
 const curveBelowTableSheets = new Set([
   WIND_TURBINE_SHEET_NAME,
   DIESEL_GENERATOR_SHEET_NAME,
@@ -171,30 +179,16 @@ function renderSchemeList() {
 }
 
 function renderSchemeTreeItem(scheme) {
-  const expanded = Boolean(schemeState.expandedSchemes[scheme.name] ?? scheme.name === schemeState.current);
   const active = scheme.name === schemeState.current;
+  const modifiedAt = scheme.updated_at || scheme.file_mtime || "";
   return `
     <section class="scheme-tree-entry ${active ? "active" : ""}">
-      <div class="scheme-tree-node ${expanded ? "expanded" : ""}">
-        <button class="scheme-tree-toggle" type="button" data-scheme-expand="${escapeHtml(scheme.name)}" aria-expanded="${expanded}" aria-label="${expanded ? "收起方案" : "展开方案"}">
-          <span></span>
-        </button>
+      <div class="scheme-tree-node">
+        <span class="scheme-tree-branch" aria-hidden="true"></span>
         <button class="scheme-tree-folder ${active ? "active" : ""}" type="button" data-scheme="${escapeHtml(scheme.name)}" title="右键打开操作菜单">
           <span class="scheme-tree-icon folder" aria-hidden="true"></span>
           <strong>${escapeHtml(scheme.name)}</strong>
-          <small>${escapeHtml(scheme.file_mtime || "")}</small>
-        </button>
-      </div>
-      <div class="scheme-tree-children" ${expanded ? "" : "hidden"}>
-        <button class="scheme-tree-file ${active && schemeState.currentSheet !== "计算参数" ? "active" : ""}" type="button" data-scheme="${escapeHtml(scheme.name)}" title="打开输入配置工作簿">
-          <span class="scheme-tree-icon file" aria-hidden="true"></span>
-          <strong>输入配置工作簿</strong>
-          <span>${escapeHtml(scheme.description || "未填写说明")}</span>
-        </button>
-        <button class="scheme-tree-file ${active && schemeState.currentSheet === "计算参数" ? "active" : ""}" type="button" data-scheme="${escapeHtml(scheme.name)}" data-scheme-sheet="计算参数" title="打开计算参数表单">
-          <span class="scheme-tree-icon file" aria-hidden="true"></span>
-          <strong>计算参数</strong>
-          <span>Excel 表单</span>
+          <small>${escapeHtml(modifiedAt)}</small>
         </button>
       </div>
     </section>
@@ -475,7 +469,7 @@ async function saveComputeConfig() {
 function renderSheetTabs() {
   const target = document.getElementById("sheetTabs");
   target.innerHTML = schemeState.sheets.map((sheet) => `
-    <button type="button" class="${sheet.name === schemeState.currentSheet ? "active" : ""}" data-sheet="${escapeHtml(sheet.name)}">${escapeHtml(sheet.name)}</button>
+    <button type="button" class="${sheet.name === schemeState.currentSheet ? "active" : ""}" data-sheet="${escapeHtml(sheet.name)}" title="${escapeHtml(sheet.name)}">${escapeHtml(SHEET_TAB_LABELS[sheet.name] || sheet.name)}</button>
   `).join("");
   target.querySelectorAll("[data-sheet]").forEach((button) => button.addEventListener("click", () => loadSheet(button.dataset.sheet || "")));
 }

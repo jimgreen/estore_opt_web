@@ -44,6 +44,7 @@ PROJECT_ROOT = WEB_ROOT.parent
 ROOT = PROJECT_ROOT
 DEFAULT_EXCEL_PATH = PROJECT_ROOT / "5.4模型定义_低温风光扩容_更多冷却液_20260512.xlsx"
 DEFAULT_PARAM_PATH = DEFAULT_EXCEL_PATH if DEFAULT_EXCEL_PATH.exists() else PROJECT_ROOT / f"model_params_{SUFFIX}.json"
+OPT_RESULT_FILE_NAME = "opt_result.xlsx"
 DEFAULT_TIGHT_TEMP_BOUNDS = {
     "T_bat_min": 0.0,
     "T_bat_max": 45.0,
@@ -900,8 +901,9 @@ def estimate_model_size(
     if current_mode == "discrete":
         binaries += n_steps * n_i
     diesel_online_constraints = 1 if n_dg_units > 0 else 0
+    inner_pump_always_on_constraints = 1
     constraints = n_steps * (
-        46 + n_s + n_t + n_s + n_t + n_s * n_t + n_dg_units * 6 + diesel_online_constraints
+        46 + n_s + n_t + n_s + n_t + n_s * n_t + n_dg_units * 6 + diesel_online_constraints + inner_pump_always_on_constraints
     )
     if current_mode == "discrete":
         constraints += n_steps * (1 + n_i)
@@ -1607,6 +1609,7 @@ def solve_milp_cplex_native(
             add_constr([(P_dg[g, t], 1.0), (u_dg[g, t], -float(unit["p_max_w"]))], "L", 0.0, f"dg_max_{g}_{t}")
         if n_g:
             add_constr([(u_dg[g, t], 1.0) for g in range(n_g)], "G", 1.0, f"dg_at_least_one_on_{t}")
+        add_constr([(u_pi[t], 1.0)], "E", 1.0, f"u_pi_always_on_{t}")
 
         add_constr([(v_bt[t], 1.0), (u_pi[t], -dT_bt_lb)], "G", 0.0, f"vbt_lb0_{t}")
         add_constr([(v_bt[t], 1.0), (u_pi[t], -dT_bt_ub)], "L", 0.0, f"vbt_ub0_{t}")
@@ -2380,6 +2383,7 @@ def solve_milp_mosek_native(
             add_constr([(P_dg[g, t], 1.0), (u_dg[g, t], -float(unit["p_max_w"]))], "L", 0.0, f"dg_max_{g}_{t}")
         if n_g:
             add_constr([(u_dg[g, t], 1.0) for g in range(n_g)], "G", 1.0, f"dg_at_least_one_on_{t}")
+        add_constr([(u_pi[t], 1.0)], "E", 1.0, f"u_pi_always_on_{t}")
 
         add_constr([(v_bt[t], 1.0), (u_pi[t], -dT_bt_lb)], "G", 0.0, f"vbt_lb0_{t}")
         add_constr([(v_bt[t], 1.0), (u_pi[t], -dT_bt_ub)], "L", 0.0, f"vbt_ub0_{t}")
@@ -2991,6 +2995,7 @@ def solve_milp(
             m.addConstr(P_dg[g, t] <= u_dg[g, t] * unit["p_max_w"], name=f"dg_max_{g}_{t}")
         if n_g:
             m.addConstr(sum(u_dg[g, t] for g in range(n_g)) >= 1.0, name=f"dg_at_least_one_on_{t}")
+        m.addConstr(u_pi[t] == 1.0, name=f"u_pi_always_on_{t}")
 
         x_bt = T_bat[t] - T_tank[t]
         m.addConstr(v_bt[t] >= dT_bt_lb * u_pi[t], name=f"vbt_lb0_{t}")
@@ -3487,6 +3492,8 @@ def apply_mip_start(
         tbat_guess = float(thermal["T_bat"][t])
         ttank_guess = float(thermal["T_tank"][t])
         tcont_guess = float(thermal["T_cont"][t])
+        vbt_guess = tbat_guess - ttank_guess
+        qbt_guess = float(p.K_bt) * vbt_guess
 
         set_var_start(SOC[t], soc_guess)
         set_var_start(T_bat[t], tbat_guess)
@@ -3508,13 +3515,13 @@ def apply_mip_start(
         set_var_start(cont_low_dev[t], max(0.0, p.T_cont_band_low - tcont_guess))
         set_var_start(cont_high_dev[t], max(0.0, tcont_guess - p.T_cont_band_high))
         set_var_start(cont_hot_dev[t], max(0.0, tcont_guess - p.T_cont_hot))
-        set_var_start(Q_bt[t], 0.0)
+        set_var_start(Q_bt[t], qbt_guess)
         set_var_start(Q_tamb[t], 0.0)
         set_var_start(Q_tamb_dump[t], 0.0)
-        set_var_start(v_bt[t], 0.0)
+        set_var_start(v_bt[t], vbt_guess)
         set_var_start(v_ta[t], 0.0)
 
-        for var, val in ((u_pi[t], 0.0), (u_po[t], 0.0), (u_lh[t], 0.0), (u_ch[t], 0.0)):
+        for var, val in ((u_pi[t], 1.0), (u_po[t], 0.0), (u_lh[t], 0.0), (u_ch[t], 0.0)):
             set_var_start(var, val)
             set_var_hint(var, val)
         set_var_start(P_heat_liquid_ctrl[t], 0.0)
@@ -4765,15 +4772,11 @@ def write_summary(p: SimpleNamespace, result: dict | None, args, path: Path) -> 
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def get_output_paths(mode: str, output_dir: Path | None = None, dt_minutes: float = 15.0) -> dict[str, Path]:
-    base = output_dir or ROOT
+def get_output_paths(mode: str, output_dir: Path | None = None, dt_minutes: float = 15.0, params_path: Path | None = None) -> dict[str, Path]:
+    base = output_dir or (Path(params_path).parent if params_path else ROOT)
     base.mkdir(parents=True, exist_ok=True)
-    if mode in {"test_1h", "test_4h"}:
-        tag = mode
-    else:
-        tag = f"{float(dt_minutes):g}min"
     return {
-        "state_workbook": base / f"optimization_results_perspective_i2r_{tag}_20260530.xlsx",
+        "state_workbook": base / OPT_RESULT_FILE_NAME,
     }
 
 
@@ -5025,7 +5028,7 @@ def main(argv: list[str] | None = None) -> int:
 
     data = interpolate_profiles(p, bp.dt_hours, horizon)
     args.dt_minutes = float(data["dt"]) / 60.0
-    paths = get_output_paths(args.mode, args.output_dir, args.dt_minutes)
+    paths = get_output_paths(args.mode, args.output_dir, args.dt_minutes, params_path=args.params)
 
     max_dg_points = max(len(u["powers_w"]) for u in p.diesel_units)
     est = estimate_model_size(bp, int(data["N"]), len(p.diesel_units), max_dg_points, current_mode=args.current_mode)
@@ -5096,7 +5099,7 @@ def main(argv: list[str] | None = None) -> int:
             write_progress(
                 progress_json,
                 stage="solving",
-                message=f"{solver_name} 正在优化求解主模型",
+                message=f"{solver_name} 正在优化调度主模型",
                 active_solver=solver_name,
                 active_backend=solver_backend,
                 solver_attempts=solver_attempts,
@@ -5217,7 +5220,7 @@ def main(argv: list[str] | None = None) -> int:
         write_progress(
             progress_json,
             stage="completed",
-            message="优化求解完成",
+            message="优化调度完成",
             active_solver=result.get("solver_used"),
             active_backend=result.get("solver_backend"),
             output_paths=paths,
@@ -5252,7 +5255,7 @@ def main(argv: list[str] | None = None) -> int:
     write_progress(
         progress_json,
         stage="failed",
-        message=f"优化求解失败：{result.get('status')}",
+        message=f"优化调度失败：{result.get('status')}",
         active_solver=result.get("solver_used"),
         active_backend=result.get("solver_backend"),
         final_result=compact_result_for_progress(result),

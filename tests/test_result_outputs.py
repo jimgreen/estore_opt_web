@@ -111,7 +111,7 @@ class ResultOutputTests(unittest.TestCase):
     def test_result_workbook_embeds_statistics_curves_and_payload_without_sidecars(self):
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp)
-            workbook_path = output_dir / "optimization_results_perspective_i2r_15min_20260530.xlsx"
+            workbook_path = output_dir / "opt_result.xlsx"
             result = sample_result()
             result["state_workbook"] = str(workbook_path)
 
@@ -149,7 +149,7 @@ class ResultOutputTests(unittest.TestCase):
     def test_server_reads_result_data_and_file_links_from_result_workbook(self):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp)
-            workbook_path = run_dir / "optimization_results_perspective_i2r_15min_20260530.xlsx"
+            workbook_path = run_dir / "opt_result.xlsx"
             result = sample_result()
             result["state_workbook"] = str(workbook_path)
             solve.write_detailed_results_workbook(sample_params(), result, workbook_path)
@@ -167,7 +167,39 @@ class ResultOutputTests(unittest.TestCase):
         paths = solve.get_output_paths("dayahead_24h", Path("runs/demo"), 60.0)
 
         self.assertEqual(set(paths), {"state_workbook"})
-        self.assertEqual(paths["state_workbook"].suffix, ".xlsx")
+        self.assertEqual(paths["state_workbook"], Path("runs/demo") / "opt_result.xlsx")
+
+    def test_output_paths_default_to_params_directory_when_output_dir_is_omitted(self):
+        params_path = Path("estore_schemes/demo/params.xlsx")
+
+        paths = solve.get_output_paths("dayahead_24h", None, 60.0, params_path=params_path)
+
+        self.assertEqual(paths["state_workbook"], params_path.parent / "opt_result.xlsx")
+
+    def test_task_command_writes_optimization_result_to_scheme_directory(self):
+        original_scheme_root = server.SCHEME_ROOT
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                server.SCHEME_ROOT = Path(tmp)
+                server.scheme_dir("demo").mkdir(parents=True)
+                run_dir = Path(tmp) / "_runs" / "task-1"
+                manager = object.__new__(server.TaskManager)
+                task = server.OptTask(id="task-1", scheme="demo", config={})
+
+                command = manager._build_command(
+                    task,
+                    run_dir / server.PARAM_FILE_NAME,
+                    run_dir / server.COMPUTE_CONFIG_FILE_NAME,
+                    run_dir / "diagnostics.json",
+                    run_dir / "model_stats.json",
+                    run_dir / "progress.json",
+                    run_dir,
+                )
+
+                output_dir = Path(command[command.index("--output-dir") + 1])
+                self.assertEqual(output_dir, server.scheme_dir("demo"))
+            finally:
+                server.SCHEME_ROOT = original_scheme_root
 
 
 if __name__ == "__main__":

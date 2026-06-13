@@ -13,12 +13,12 @@ import solve  # noqa: E402
 
 
 class DieselGeneratorConstraintTests(unittest.TestCase):
-    def test_estimate_model_size_counts_one_diesel_online_constraint_per_step(self):
+    def test_estimate_model_size_counts_diesel_online_and_inner_pump_constraints_per_step(self):
         bp = SimpleNamespace(n_s=2, n_t=3, n_i=4)
 
         stats = solve.estimate_model_size(bp, n_steps=5, n_dg_units=2, dg_points=3)
 
-        expected_per_step = 46 + bp.n_s + bp.n_t + bp.n_s + bp.n_t + bp.n_s * bp.n_t + 2 * 6 + 1
+        expected_per_step = 46 + bp.n_s + bp.n_t + bp.n_s + bp.n_t + bp.n_s * bp.n_t + 2 * 6 + 1 + 1
         self.assertEqual(stats["constraints_est"], 5 * expected_per_step)
 
     def test_all_solver_builders_add_one_diesel_online_constraint_per_step(self):
@@ -30,6 +30,16 @@ class DieselGeneratorConstraintTests(unittest.TestCase):
             2,
         )
         self.assertIn('sum(u_dg[g, t] for g in range(n_g)) >= 1.0, name=f"dg_at_least_one_on_{t}"', source)
+
+    def test_all_solver_builders_force_inner_loop_pump_on_every_step(self):
+        source = (ROOT / "solve.py").read_text(encoding="utf-8-sig")
+
+        self.assertEqual(source.count("u_pi_always_on_"), 3)
+        self.assertEqual(
+            source.count('add_constr([(u_pi[t], 1.0)], "E", 1.0, f"u_pi_always_on_{t}")'),
+            2,
+        )
+        self.assertIn('m.addConstr(u_pi[t] == 1.0, name=f"u_pi_always_on_{t}")', source)
 
 
 if __name__ == "__main__":
