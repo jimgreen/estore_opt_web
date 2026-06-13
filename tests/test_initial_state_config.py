@@ -110,14 +110,34 @@ class InitialStateConfigTests(unittest.TestCase):
     def test_optimization_terminal_targets_return_to_initial_state(self):
         source = (ROOT / "solve.py").read_text(encoding="utf-8-sig")
 
-        self.assertEqual(source.count('"soc_terminal_target"'), 3)
-        self.assertIn('name="soc_terminal_target"', source)
-        self.assertEqual(source.count('"ttank_terminal_target"'), 3)
-        self.assertIn('name="ttank_terminal_target"', source)
-        self.assertEqual(source.count('"tcont_terminal_target"'), 3)
-        self.assertIn('name="tcont_terminal_target"', source)
+        self.assertEqual(source.count('"soc_schedule_terminal_target"'), 3)
+        self.assertIn('add_constr([(SOC[n - 1], 1.0)], "E", p.SOC_init, "soc_schedule_terminal_target")', source)
+        self.assertIn('m.addConstr(SOC[n - 1] == p.SOC_init, name="soc_schedule_terminal_target")', source)
+        self.assertEqual(source.count('"ttank_schedule_terminal_target"'), 3)
+        self.assertIn('add_constr([(T_tank[n - 1], 1.0)], "E", p.T_tank_init, "ttank_schedule_terminal_target")', source)
+        self.assertIn('m.addConstr(T_tank[n - 1] == p.T_tank_init, name="ttank_schedule_terminal_target")', source)
+        self.assertEqual(source.count('"tcont_schedule_terminal_target"'), 3)
+        self.assertIn('add_constr([(T_cont[n - 1], 1.0)], "E", p.T_cont_init, "tcont_schedule_terminal_target")', source)
+        self.assertIn('m.addConstr(T_cont[n - 1] == p.T_cont_init, name="tcont_schedule_terminal_target")', source)
+        self.assertNotIn('"soc_terminal_target"', source)
+        self.assertNotIn('"ttank_terminal_target"', source)
+        self.assertNotIn('"tcont_terminal_target"', source)
         self.assertNotIn("SOC_end - 0.5", source)
         self.assertNotIn("0.5 - SOC_end", source)
+
+    def test_optimization_uses_controllable_heater_power_under_on_status(self):
+        source = (ROOT / "solve.py").read_text(encoding="utf-8-sig")
+
+        self.assertGreaterEqual(source.count("P_heat_liquid_ctrl"), 12)
+        self.assertGreaterEqual(source.count("P_heat_cont_ctrl"), 12)
+        self.assertEqual(source.count("p_heat_liquid_ctrl_max"), 3)
+        self.assertEqual(source.count("p_heat_cont_ctrl_max"), 3)
+        self.assertEqual(source.count("p_heat_liquid_ctrl_min"), 3)
+        self.assertEqual(source.count("p_heat_cont_ctrl_min"), 3)
+        self.assertNotIn("(u_lh[prev], -p.P_heat_liquid * dt_s / p.C_tank)", source)
+        self.assertNotIn("(u_ch[prev], -p.P_heat_cont * dt_s / p.C_cont)", source)
+        self.assertNotIn("(u_lh[last], -p.P_heat_liquid * dt_s / p.C_tank)", source)
+        self.assertNotIn("(u_ch[last], -p.P_heat_cont * dt_s / p.C_cont)", source)
 
 
 if __name__ == "__main__":

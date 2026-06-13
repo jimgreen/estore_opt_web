@@ -889,7 +889,7 @@ def estimate_model_size(
 ) -> dict[str, int]:
     n_s, n_t, n_i = bp.n_s, bp.n_t, bp.n_i
     continuous = n_steps * (
-        34
+        36
         + n_s
         + n_t
         + n_s * n_t
@@ -1484,6 +1484,10 @@ def solve_milp_cplex_native(
     u_po = add_vars(range(n), lambda t: f"u_po[{t}]", 0.0, 1.0, "B")
     u_lh = add_vars(range(n), lambda t: f"u_lh[{t}]", 0.0, 1.0, "B")
     u_ch = add_vars(range(n), lambda t: f"u_ch[{t}]", 0.0, 1.0, "B")
+    P_heat_liquid_ctrl = add_vars(range(n), lambda t: f"P_heat_liquid_ctrl[{t}]", 0.0, p.P_heat_liquid)
+    P_heat_cont_ctrl = add_vars(range(n), lambda t: f"P_heat_cont_ctrl[{t}]", 0.0, p.P_heat_cont)
+    p_heat_liquid_min_w = min(1.0, max(0.0, float(p.P_heat_liquid)))
+    p_heat_cont_min_w = min(1.0, max(0.0, float(p.P_heat_cont)))
     u_pi_change = add_vars(range(max(0, n - 1)), lambda t: f"u_pi_change[{t}]", 0.0, 1.0)
     u_po_change = add_vars(range(max(0, n - 1)), lambda t: f"u_po_change[{t}]", 0.0, 1.0)
     u_lh_change = add_vars(range(max(0, n - 1)), lambda t: f"u_lh_change[{t}]", 0.0, 1.0)
@@ -1617,11 +1621,15 @@ def solve_milp_cplex_native(
         add_constr([(Q_tamb[t], 1.0), (v_ta[t], -p.K_t_amb)], "E", 0.0, f"qtamb_map_{t}")
         add_constr([(Q_tamb_dump[t], 1.0), (Q_tamb[t], -1.0)], "G", 0.0, f"qtamb_dump_pos_{t}")
 
+        add_constr([(P_heat_liquid_ctrl[t], 1.0), (u_lh[t], -p.P_heat_liquid)], "L", 0.0, f"p_heat_liquid_ctrl_max_{t}")
+        add_constr([(P_heat_cont_ctrl[t], 1.0), (u_ch[t], -p.P_heat_cont)], "L", 0.0, f"p_heat_cont_ctrl_max_{t}")
+        add_constr([(P_heat_liquid_ctrl[t], 1.0), (u_lh[t], -p_heat_liquid_min_w)], "G", 0.0, f"p_heat_liquid_ctrl_min_{t}")
+        add_constr([(P_heat_cont_ctrl[t], 1.0), (u_ch[t], -p_heat_cont_min_w)], "G", 0.0, f"p_heat_cont_ctrl_min_{t}")
         aux_terms = [
             (u_pi[t], p.P_pump_in),
             (u_po[t], p.P_pump_out),
-            (u_lh[t], p.P_heat_liquid),
-            (u_ch[t], p.P_heat_cont),
+            (P_heat_liquid_ctrl[t], 1.0),
+            (P_heat_cont_ctrl[t], 1.0),
         ]
         add_constr([(P_dc_abs[t], 1.0), (P_dc_pack[t], -1.0)], "G", 0.0, f"pdc_abs_pos_{t}")
         add_constr([(P_dc_abs[t], 1.0), (P_dc_pack[t], 1.0)], "G", 0.0, f"pdc_abs_neg_{t}")
@@ -1687,7 +1695,7 @@ def solve_milp_cplex_native(
                 (T_tank[t], 1.0),
                 (T_tank[prev], -1.0),
                 (Q_bt[prev], -dt_s / p.C_tank),
-                (u_lh[prev], -p.P_heat_liquid * dt_s / p.C_tank),
+                (P_heat_liquid_ctrl[prev], -dt_s / p.C_tank),
                 (Q_tamb[prev], dt_s / p.C_tank),
                 (T_tank[t], p.K_t_cont * dt_s / p.C_tank),
                 (T_cont[t], -p.K_t_cont * dt_s / p.C_tank),
@@ -1704,7 +1712,7 @@ def solve_milp_cplex_native(
                 (T_cont[t], p.K_b_cont * dt_s / p.C_cont),
                 (T_tank[t], -p.K_t_cont * dt_s / p.C_cont),
                 (T_cont[t], p.K_t_cont * dt_s / p.C_cont),
-                (u_ch[prev], -p.P_heat_cont * dt_s / p.C_cont),
+                (P_heat_cont_ctrl[prev], -dt_s / p.C_cont),
                 (T_cont[t], p.K_cont_amb * dt_s / p.C_cont),
             ],
             "E",
@@ -1715,7 +1723,7 @@ def solve_milp_cplex_native(
     SOC_end = add_scalar("SOC_end", p.SOC_min, p.SOC_max)
     add_constr([(SOC_end, 1.0), (SOC[n - 1], -1.0), (I_bat[n - 1], dt_s / (p.Q_nom * 3600.0))], "E", 0.0, "soc_terminal")
     soc_dev = add_scalar("soc_dev", 0.0, terminal_deviation_ub(p.SOC_min, p.SOC_max, p.SOC_init))
-    add_constr([(SOC_end, 1.0)], "E", p.SOC_init, "soc_terminal_target")
+    add_constr([(SOC[n - 1], 1.0)], "E", p.SOC_init, "soc_schedule_terminal_target")
     add_constr([(soc_dev, 1.0), (SOC_end, -1.0)], "G", -p.SOC_init, "soc_dev_pos")
     add_constr([(soc_dev, 1.0), (SOC_end, 1.0)], "G", p.SOC_init, "soc_dev_neg")
 
@@ -1741,7 +1749,7 @@ def solve_milp_cplex_native(
             (T_tank_end, 1.0),
             (T_tank[last], -1.0),
             (Q_bt[last], -dt_s / p.C_tank),
-            (u_lh[last], -p.P_heat_liquid * dt_s / p.C_tank),
+            (P_heat_liquid_ctrl[last], -dt_s / p.C_tank),
             (Q_tamb[last], dt_s / p.C_tank),
             (T_tank_end, p.K_t_cont * dt_s / p.C_tank),
             (T_cont_end, -p.K_t_cont * dt_s / p.C_tank),
@@ -1758,15 +1766,15 @@ def solve_milp_cplex_native(
             (T_cont_end, p.K_b_cont * dt_s / p.C_cont),
             (T_tank_end, -p.K_t_cont * dt_s / p.C_cont),
             (T_cont_end, p.K_t_cont * dt_s / p.C_cont),
-            (u_ch[last], -p.P_heat_cont * dt_s / p.C_cont),
+            (P_heat_cont_ctrl[last], -dt_s / p.C_cont),
             (T_cont_end, p.K_cont_amb * dt_s / p.C_cont),
         ],
         "E",
         p.K_cont_amb * float(t_amb[last]) * dt_s / p.C_cont,
         "tcont_terminal",
     )
-    add_constr([(T_tank_end, 1.0)], "E", p.T_tank_init, "ttank_terminal_target")
-    add_constr([(T_cont_end, 1.0)], "E", p.T_cont_init, "tcont_terminal_target")
+    add_constr([(T_tank[n - 1], 1.0)], "E", p.T_tank_init, "ttank_schedule_terminal_target")
+    add_constr([(T_cont[n - 1], 1.0)], "E", p.T_cont_init, "tcont_schedule_terminal_target")
     add_constr([(tank_terminal_short, 1.0), (T_tank_end, -1.0)], "G", -p.T_tank_init, "tank_terminal_dev_pos")
     add_constr([(tank_terminal_short, 1.0), (T_tank_end, 1.0)], "G", p.T_tank_init, "tank_terminal_dev_neg")
     add_constr([(cont_terminal_short, 1.0), (T_cont_end, -1.0)], "G", -p.T_cont_init, "cont_terminal_dev_pos")
@@ -1899,6 +1907,8 @@ def solve_milp_cplex_native(
         "u_po": arr1(u_po, n),
         "u_lh": arr1(u_lh, n),
         "u_ch": arr1(u_ch, n),
+        "P_heat_liquid_w": arr1(P_heat_liquid_ctrl, n),
+        "P_heat_cont_w": arr1(P_heat_cont_ctrl, n),
         "u_pi_change": arr1(u_pi_change, max(0, n - 1)),
         "u_po_change": arr1(u_po_change, max(0, n - 1)),
         "u_lh_change": arr1(u_lh_change, max(0, n - 1)),
@@ -1924,7 +1934,7 @@ def solve_milp_cplex_native(
         "renewable_surplus_weight": renewable_surplus_weight,
         "fuel_kg": objective_value,
         "curt_kwh": float(np.sum((arr1(P_pv_curt, n) + arr1(P_wt_curt, n)) * dt_s / 3600.0 / 1000.0)),
-        "heat_kwh": float(np.sum((arr1(u_lh, n) * p.P_heat_liquid + arr1(u_ch, n) * p.P_heat_cont) * dt_s / 3600.0 / 1000.0)),
+        "heat_kwh": float(np.sum((arr1(P_heat_liquid_ctrl, n) + arr1(P_heat_cont_ctrl, n)) * dt_s / 3600.0 / 1000.0)),
         "preheat_short_score": float(np.sum(renewable_surplus_weight * (arr1(tank_preheat_short, n) + arr1(cont_preheat_short, n)) * dt_s / 3600.0)),
         "bat_band_score": float(np.sum((arr1(bat_low_dev, n) + arr1(bat_high_dev, n)) * dt_s / 3600.0)),
         "tank_band_score": float(np.sum((arr1(tank_low_dev, n) + arr1(tank_high_dev, n)) * dt_s / 3600.0)),
@@ -1960,8 +1970,8 @@ def solve_milp_cplex_native(
     result["q_tc_w"] = p.K_t_cont * (result["T_tank"] - result["T_cont"])
     t_amb_prev = np.concatenate(([result["T_amb"][0]], result["T_amb"][:-1]))
     result["q_camb_w"] = p.K_cont_amb * (result["T_cont"] - t_amb_prev)
-    result["P_heat_liquid_w"] = result["u_lh"] * p.P_heat_liquid
-    result["P_heat_cont_w"] = result["u_ch"] * p.P_heat_cont
+    result["P_heat_liquid_w"] = np.asarray(result["P_heat_liquid_w"], dtype=float)
+    result["P_heat_cont_w"] = np.asarray(result["P_heat_cont_w"], dtype=float)
     result["P_pump_in_w"] = result["u_pi"] * p.P_pump_in
     result["P_pump_out_w"] = result["u_po"] * p.P_pump_out
     result["checks"] = compute_checks(p, result)
@@ -2248,6 +2258,10 @@ def solve_milp_mosek_native(
     u_po = add_vars(range(n), lambda t: f"u_po[{t}]", 0.0, 1.0, "B")
     u_lh = add_vars(range(n), lambda t: f"u_lh[{t}]", 0.0, 1.0, "B")
     u_ch = add_vars(range(n), lambda t: f"u_ch[{t}]", 0.0, 1.0, "B")
+    P_heat_liquid_ctrl = add_vars(range(n), lambda t: f"P_heat_liquid_ctrl[{t}]", 0.0, p.P_heat_liquid)
+    P_heat_cont_ctrl = add_vars(range(n), lambda t: f"P_heat_cont_ctrl[{t}]", 0.0, p.P_heat_cont)
+    p_heat_liquid_min_w = min(1.0, max(0.0, float(p.P_heat_liquid)))
+    p_heat_cont_min_w = min(1.0, max(0.0, float(p.P_heat_cont)))
     u_pi_change = add_vars(range(max(0, n - 1)), lambda t: f"u_pi_change[{t}]", 0.0, 1.0)
     u_po_change = add_vars(range(max(0, n - 1)), lambda t: f"u_po_change[{t}]", 0.0, 1.0)
     u_lh_change = add_vars(range(max(0, n - 1)), lambda t: f"u_lh_change[{t}]", 0.0, 1.0)
@@ -2380,11 +2394,15 @@ def solve_milp_mosek_native(
         add_constr([(Q_tamb[t], 1.0), (v_ta[t], -p.K_t_amb)], "E", 0.0, f"qtamb_map_{t}")
         add_constr([(Q_tamb_dump[t], 1.0), (Q_tamb[t], -1.0)], "G", 0.0, f"qtamb_dump_pos_{t}")
 
+        add_constr([(P_heat_liquid_ctrl[t], 1.0), (u_lh[t], -p.P_heat_liquid)], "L", 0.0, f"p_heat_liquid_ctrl_max_{t}")
+        add_constr([(P_heat_cont_ctrl[t], 1.0), (u_ch[t], -p.P_heat_cont)], "L", 0.0, f"p_heat_cont_ctrl_max_{t}")
+        add_constr([(P_heat_liquid_ctrl[t], 1.0), (u_lh[t], -p_heat_liquid_min_w)], "G", 0.0, f"p_heat_liquid_ctrl_min_{t}")
+        add_constr([(P_heat_cont_ctrl[t], 1.0), (u_ch[t], -p_heat_cont_min_w)], "G", 0.0, f"p_heat_cont_ctrl_min_{t}")
         aux_terms = [
             (u_pi[t], p.P_pump_in),
             (u_po[t], p.P_pump_out),
-            (u_lh[t], p.P_heat_liquid),
-            (u_ch[t], p.P_heat_cont),
+            (P_heat_liquid_ctrl[t], 1.0),
+            (P_heat_cont_ctrl[t], 1.0),
         ]
         add_constr([(P_dc_abs[t], 1.0), (P_dc_pack[t], -1.0)], "G", 0.0, f"pdc_abs_pos_{t}")
         add_constr([(P_dc_abs[t], 1.0), (P_dc_pack[t], 1.0)], "G", 0.0, f"pdc_abs_neg_{t}")
@@ -2449,7 +2467,7 @@ def solve_milp_mosek_native(
                 (T_tank[t], 1.0),
                 (T_tank[prev], -1.0),
                 (Q_bt[prev], -dt_s / p.C_tank),
-                (u_lh[prev], -p.P_heat_liquid * dt_s / p.C_tank),
+                (P_heat_liquid_ctrl[prev], -dt_s / p.C_tank),
                 (Q_tamb[prev], dt_s / p.C_tank),
                 (T_tank[t], p.K_t_cont * dt_s / p.C_tank),
                 (T_cont[t], -p.K_t_cont * dt_s / p.C_tank),
@@ -2466,7 +2484,7 @@ def solve_milp_mosek_native(
                 (T_cont[t], p.K_b_cont * dt_s / p.C_cont),
                 (T_tank[t], -p.K_t_cont * dt_s / p.C_cont),
                 (T_cont[t], p.K_t_cont * dt_s / p.C_cont),
-                (u_ch[prev], -p.P_heat_cont * dt_s / p.C_cont),
+                (P_heat_cont_ctrl[prev], -dt_s / p.C_cont),
                 (T_cont[t], p.K_cont_amb * dt_s / p.C_cont),
             ],
             "E",
@@ -2477,7 +2495,7 @@ def solve_milp_mosek_native(
     SOC_end = add_scalar("SOC_end", p.SOC_min, p.SOC_max)
     add_constr([(SOC_end, 1.0), (SOC[n - 1], -1.0), (I_bat[n - 1], dt_s / (p.Q_nom * 3600.0))], "E", 0.0, "soc_terminal")
     soc_dev = add_scalar("soc_dev", 0.0, terminal_deviation_ub(p.SOC_min, p.SOC_max, p.SOC_init))
-    add_constr([(SOC_end, 1.0)], "E", p.SOC_init, "soc_terminal_target")
+    add_constr([(SOC[n - 1], 1.0)], "E", p.SOC_init, "soc_schedule_terminal_target")
     add_constr([(soc_dev, 1.0), (SOC_end, -1.0)], "G", -p.SOC_init, "soc_dev_pos")
     add_constr([(soc_dev, 1.0), (SOC_end, 1.0)], "G", p.SOC_init, "soc_dev_neg")
     T_bat_end = add_scalar("T_bat_end", p.T_bat_min, p.T_bat_max)
@@ -2502,7 +2520,7 @@ def solve_milp_mosek_native(
             (T_tank_end, 1.0),
             (T_tank[last], -1.0),
             (Q_bt[last], -dt_s / p.C_tank),
-            (u_lh[last], -p.P_heat_liquid * dt_s / p.C_tank),
+            (P_heat_liquid_ctrl[last], -dt_s / p.C_tank),
             (Q_tamb[last], dt_s / p.C_tank),
             (T_tank_end, p.K_t_cont * dt_s / p.C_tank),
             (T_cont_end, -p.K_t_cont * dt_s / p.C_tank),
@@ -2519,15 +2537,15 @@ def solve_milp_mosek_native(
             (T_cont_end, p.K_b_cont * dt_s / p.C_cont),
             (T_tank_end, -p.K_t_cont * dt_s / p.C_cont),
             (T_cont_end, p.K_t_cont * dt_s / p.C_cont),
-            (u_ch[last], -p.P_heat_cont * dt_s / p.C_cont),
+            (P_heat_cont_ctrl[last], -dt_s / p.C_cont),
             (T_cont_end, p.K_cont_amb * dt_s / p.C_cont),
         ],
         "E",
         p.K_cont_amb * float(t_amb[last]) * dt_s / p.C_cont,
         "tcont_terminal",
     )
-    add_constr([(T_tank_end, 1.0)], "E", p.T_tank_init, "ttank_terminal_target")
-    add_constr([(T_cont_end, 1.0)], "E", p.T_cont_init, "tcont_terminal_target")
+    add_constr([(T_tank[n - 1], 1.0)], "E", p.T_tank_init, "ttank_schedule_terminal_target")
+    add_constr([(T_cont[n - 1], 1.0)], "E", p.T_cont_init, "tcont_schedule_terminal_target")
     add_constr([(tank_terminal_short, 1.0), (T_tank_end, -1.0)], "G", -p.T_tank_init, "tank_terminal_dev_pos")
     add_constr([(tank_terminal_short, 1.0), (T_tank_end, 1.0)], "G", p.T_tank_init, "tank_terminal_dev_neg")
     add_constr([(cont_terminal_short, 1.0), (T_cont_end, -1.0)], "G", -p.T_cont_init, "cont_terminal_dev_pos")
@@ -2669,6 +2687,8 @@ def solve_milp_mosek_native(
         "u_po": arr1(u_po, n),
         "u_lh": arr1(u_lh, n),
         "u_ch": arr1(u_ch, n),
+        "P_heat_liquid_w": arr1(P_heat_liquid_ctrl, n),
+        "P_heat_cont_w": arr1(P_heat_cont_ctrl, n),
         "u_pi_change": arr1(u_pi_change, max(0, n - 1)),
         "u_po_change": arr1(u_po_change, max(0, n - 1)),
         "u_lh_change": arr1(u_lh_change, max(0, n - 1)),
@@ -2694,7 +2714,7 @@ def solve_milp_mosek_native(
         "renewable_surplus_weight": renewable_surplus_weight,
         "fuel_kg": objective_value,
         "curt_kwh": float(np.sum((arr1(P_pv_curt, n) + arr1(P_wt_curt, n)) * dt_s / 3600.0 / 1000.0)),
-        "heat_kwh": float(np.sum((arr1(u_lh, n) * p.P_heat_liquid + arr1(u_ch, n) * p.P_heat_cont) * dt_s / 3600.0 / 1000.0)),
+        "heat_kwh": float(np.sum((arr1(P_heat_liquid_ctrl, n) + arr1(P_heat_cont_ctrl, n)) * dt_s / 3600.0 / 1000.0)),
         "preheat_short_score": float(np.sum(renewable_surplus_weight * (arr1(tank_preheat_short, n) + arr1(cont_preheat_short, n)) * dt_s / 3600.0)),
         "bat_band_score": float(np.sum((arr1(bat_low_dev, n) + arr1(bat_high_dev, n)) * dt_s / 3600.0)),
         "tank_band_score": float(np.sum((arr1(tank_low_dev, n) + arr1(tank_high_dev, n)) * dt_s / 3600.0)),
@@ -2730,8 +2750,8 @@ def solve_milp_mosek_native(
     result["q_tc_w"] = p.K_t_cont * (result["T_tank"] - result["T_cont"])
     t_amb_prev = np.concatenate(([result["T_amb"][0]], result["T_amb"][:-1]))
     result["q_camb_w"] = p.K_cont_amb * (result["T_cont"] - t_amb_prev)
-    result["P_heat_liquid_w"] = result["u_lh"] * p.P_heat_liquid
-    result["P_heat_cont_w"] = result["u_ch"] * p.P_heat_cont
+    result["P_heat_liquid_w"] = np.asarray(result["P_heat_liquid_w"], dtype=float)
+    result["P_heat_cont_w"] = np.asarray(result["P_heat_cont_w"], dtype=float)
     result["P_pump_in_w"] = result["u_pi"] * p.P_pump_in
     result["P_pump_out_w"] = result["u_po"] * p.P_pump_out
     result["checks"] = compute_checks(p, result)
@@ -2852,6 +2872,10 @@ def solve_milp(
     u_po = m.addVars(n, vtype=GRB.BINARY, name="u_po")
     u_lh = m.addVars(n, vtype=GRB.BINARY, name="u_lh")
     u_ch = m.addVars(n, vtype=GRB.BINARY, name="u_ch")
+    P_heat_liquid_ctrl = m.addVars(n, lb=0.0, ub=p.P_heat_liquid, name="P_heat_liquid_ctrl")
+    P_heat_cont_ctrl = m.addVars(n, lb=0.0, ub=p.P_heat_cont, name="P_heat_cont_ctrl")
+    p_heat_liquid_min_w = min(1.0, max(0.0, float(p.P_heat_liquid)))
+    p_heat_cont_min_w = min(1.0, max(0.0, float(p.P_heat_cont)))
     u_pi_change = m.addVars(max(0, n - 1), lb=0.0, ub=1.0, name="u_pi_change")
     u_po_change = m.addVars(max(0, n - 1), lb=0.0, ub=1.0, name="u_po_change")
     u_lh_change = m.addVars(max(0, n - 1), lb=0.0, ub=1.0, name="u_lh_change")
@@ -2983,12 +3007,11 @@ def solve_milp(
         m.addConstr(Q_tamb[t] == p.K_t_amb * v_ta[t], name=f"qtamb_map_{t}")
         m.addConstr(Q_tamb_dump[t] >= Q_tamb[t], name=f"qtamb_dump_pos_{t}")
 
-        aux = (
-            u_pi[t] * p.P_pump_in
-            + u_po[t] * p.P_pump_out
-            + u_lh[t] * p.P_heat_liquid
-            + u_ch[t] * p.P_heat_cont
-        )
+        m.addConstr(P_heat_liquid_ctrl[t] <= u_lh[t] * p.P_heat_liquid, name=f"p_heat_liquid_ctrl_max_{t}")
+        m.addConstr(P_heat_cont_ctrl[t] <= u_ch[t] * p.P_heat_cont, name=f"p_heat_cont_ctrl_max_{t}")
+        m.addConstr(P_heat_liquid_ctrl[t] >= u_lh[t] * p_heat_liquid_min_w, name=f"p_heat_liquid_ctrl_min_{t}")
+        m.addConstr(P_heat_cont_ctrl[t] >= u_ch[t] * p_heat_cont_min_w, name=f"p_heat_cont_ctrl_min_{t}")
+        aux = u_pi[t] * p.P_pump_in + u_po[t] * p.P_pump_out + P_heat_liquid_ctrl[t] + P_heat_cont_ctrl[t]
         m.addConstr(P_dc_abs[t] >= P_dc_pack[t], name=f"pdc_abs_pos_{t}")
         m.addConstr(P_dc_abs[t] >= -P_dc_pack[t], name=f"pdc_abs_neg_{t}")
         m.addConstr(P_BESS[t] == P_dc_pack[t] - p.mu_pcs * P_dc_abs[t] - aux, name=f"pbess_{t}")
@@ -3048,20 +3071,19 @@ def solve_milp(
         m.addConstr(
             T_tank[t]
             == T_tank[t - 1]
-            + (Q_bt[prev] + u_lh[prev] * p.P_heat_liquid - Q_tamb[prev] - q_tc) * dt_s / p.C_tank,
+            + (Q_bt[prev] + P_heat_liquid_ctrl[prev] - Q_tamb[prev] - q_tc) * dt_s / p.C_tank,
             name=f"ttank_dyn_{t}",
         )
         m.addConstr(
             T_cont[t]
-            == T_cont[t - 1]
-            + (q_bc + q_tc + u_ch[prev] * p.P_heat_cont - q_camb) * dt_s / p.C_cont,
+            == T_cont[t - 1] + (q_bc + q_tc + P_heat_cont_ctrl[prev] - q_camb) * dt_s / p.C_cont,
             name=f"tcont_dyn_{t}",
         )
 
     SOC_end = m.addVar(lb=p.SOC_min, ub=p.SOC_max, name="SOC_end")
     m.addConstr(SOC_end == SOC[n - 1] - I_bat[n - 1] * dt_s / (p.Q_nom * 3600.0), name="soc_terminal")
     soc_dev = m.addVar(lb=0.0, ub=terminal_deviation_ub(p.SOC_min, p.SOC_max, p.SOC_init), name="soc_dev")
-    m.addConstr(SOC_end == p.SOC_init, name="soc_terminal_target")
+    m.addConstr(SOC[n - 1] == p.SOC_init, name="soc_schedule_terminal_target")
     m.addConstr(soc_dev >= SOC_end - p.SOC_init, name="soc_dev_pos")
     m.addConstr(soc_dev >= p.SOC_init - SOC_end, name="soc_dev_neg")
 
@@ -3080,24 +3102,24 @@ def solve_milp(
     m.addConstr(
         T_tank_end
         == T_tank[last]
-        + (Q_bt[last] + u_lh[last] * p.P_heat_liquid - Q_tamb[last] - q_tc_end) * dt_s / p.C_tank,
+        + (Q_bt[last] + P_heat_liquid_ctrl[last] - Q_tamb[last] - q_tc_end) * dt_s / p.C_tank,
         name="ttank_terminal",
     )
     m.addConstr(
         T_cont_end
         == T_cont[last]
-        + (q_bc_end + q_tc_end + u_ch[last] * p.P_heat_cont - q_camb_end) * dt_s / p.C_cont,
+        + (q_bc_end + q_tc_end + P_heat_cont_ctrl[last] - q_camb_end) * dt_s / p.C_cont,
         name="tcont_terminal",
     )
-    m.addConstr(T_tank_end == p.T_tank_init, name="ttank_terminal_target")
-    m.addConstr(T_cont_end == p.T_cont_init, name="tcont_terminal_target")
+    m.addConstr(T_tank[n - 1] == p.T_tank_init, name="ttank_schedule_terminal_target")
+    m.addConstr(T_cont[n - 1] == p.T_cont_init, name="tcont_schedule_terminal_target")
     m.addConstr(tank_terminal_short >= T_tank_end - p.T_tank_init, name="tank_terminal_dev_pos")
     m.addConstr(tank_terminal_short >= p.T_tank_init - T_tank_end, name="tank_terminal_dev_neg")
     m.addConstr(cont_terminal_short >= T_cont_end - p.T_cont_init, name="cont_terminal_dev_pos")
     m.addConstr(cont_terminal_short >= p.T_cont_init - T_cont_end, name="cont_terminal_dev_neg")
 
     fuel_kg = sum(M_dg[g, t] * dt_s / 3600.0 for g in range(n_g) for t in range(n))
-    heat_kwh = sum((u_lh[t] * p.P_heat_liquid + u_ch[t] * p.P_heat_cont) * dt_s / 3600.0 / 1000.0 for t in range(n))
+    heat_kwh = sum((P_heat_liquid_ctrl[t] + P_heat_cont_ctrl[t]) * dt_s / 3600.0 / 1000.0 for t in range(n))
     curt_kwh = sum((P_pv_curt[t] + P_wt_curt[t]) * dt_s / 3600.0 / 1000.0 for t in range(n))
     dt_h = dt_s / 3600.0
     preheat_short_score = sum(
@@ -3133,6 +3155,8 @@ def solve_milp(
         u_po,
         u_lh,
         u_ch,
+        P_heat_liquid_ctrl,
+        P_heat_cont_ctrl,
         u_pi_change,
         u_po_change,
         u_lh_change,
@@ -3281,6 +3305,8 @@ def solve_milp(
         "u_po": np.array([xv(u_po[t]) for t in range(n)]),
         "u_lh": np.array([xv(u_lh[t]) for t in range(n)]),
         "u_ch": np.array([xv(u_ch[t]) for t in range(n)]),
+        "P_heat_liquid_w": np.array([xv(P_heat_liquid_ctrl[t]) for t in range(n)]),
+        "P_heat_cont_w": np.array([xv(P_heat_cont_ctrl[t]) for t in range(n)]),
         "u_pi_change": np.array([xv(u_pi_change[t]) for t in range(max(0, n - 1))]),
         "u_po_change": np.array([xv(u_po_change[t]) for t in range(max(0, n - 1))]),
         "u_lh_change": np.array([xv(u_lh_change[t]) for t in range(max(0, n - 1))]),
@@ -3306,7 +3332,7 @@ def solve_milp(
         "renewable_surplus_weight": renewable_surplus_weight,
         "fuel_kg": sum(xv(M_dg[g, t]) * dt_s / 3600.0 for g in range(n_g) for t in range(n)),
         "curt_kwh": sum((xv(P_pv_curt[t]) + xv(P_wt_curt[t])) * dt_s / 3600.0 / 1000.0 for t in range(n)),
-        "heat_kwh": sum((xv(u_lh[t]) * p.P_heat_liquid + xv(u_ch[t]) * p.P_heat_cont) * dt_s / 3600.0 / 1000.0 for t in range(n)),
+        "heat_kwh": sum((xv(P_heat_liquid_ctrl[t]) + xv(P_heat_cont_ctrl[t])) * dt_s / 3600.0 / 1000.0 for t in range(n)),
         "preheat_short_score": sum(
             float(renewable_surplus_weight[t]) * (xv(tank_preheat_short[t]) + xv(cont_preheat_short[t])) * dt_s / 3600.0
             for t in range(n)
@@ -3341,7 +3367,8 @@ def solve_milp(
         "formal_objective": "fuel_kg_only",
         "fuel": float(result["fuel_kg"]),
         "nonfuel_terms_are_diagnostics_only": True,
-        "soc_diagnostic": float(abs(result["SOC_end"] - p.SOC_init)),
+        "soc_diagnostic": float(abs(result["SOC"][-1] - p.SOC_init)),
+        "post_step_soc_diagnostic": float(abs(result["SOC_end"] - p.SOC_init)),
         "heat_kwh_diagnostic": float(result["heat_kwh"]),
         "curtailment_kwh_diagnostic": float(result["curt_kwh"]),
         "preheat_short_diagnostic": float(result["preheat_short_score"]),
@@ -3360,8 +3387,8 @@ def solve_milp(
     result["q_tc_w"] = p.K_t_cont * (result["T_tank"] - result["T_cont"])
     t_amb_prev = np.concatenate(([result["T_amb"][0]], result["T_amb"][:-1]))
     result["q_camb_w"] = p.K_cont_amb * (result["T_cont"] - t_amb_prev)
-    result["P_heat_liquid_w"] = result["u_lh"] * p.P_heat_liquid
-    result["P_heat_cont_w"] = result["u_ch"] * p.P_heat_cont
+    result["P_heat_liquid_w"] = np.asarray(result["P_heat_liquid_w"], dtype=float)
+    result["P_heat_cont_w"] = np.asarray(result["P_heat_cont_w"], dtype=float)
     result["P_pump_in_w"] = result["u_pi"] * p.P_pump_in
     result["P_pump_out_w"] = result["u_po"] * p.P_pump_out
     result["checks"] = compute_checks(p, result)
@@ -3383,6 +3410,8 @@ def apply_mip_start(
     u_po,
     u_lh,
     u_ch,
+    P_heat_liquid_ctrl,
+    P_heat_cont_ctrl,
     u_pi_change,
     u_po_change,
     u_lh_change,
@@ -3488,6 +3517,8 @@ def apply_mip_start(
         for var, val in ((u_pi[t], 0.0), (u_po[t], 0.0), (u_lh[t], 0.0), (u_ch[t], 0.0)):
             set_var_start(var, val)
             set_var_hint(var, val)
+        set_var_start(P_heat_liquid_ctrl[t], 0.0)
+        set_var_start(P_heat_cont_ctrl[t], 0.0)
         if t > 0:
             prev = t - 1
             set_var_start(u_pi_change[prev], 0.0)
@@ -3601,12 +3632,9 @@ def compute_checks(p: SimpleNamespace, result: dict) -> dict:
     uocv_true = np.interp(soc, p.ocv_soc, p.ocv_1d)
     qgen_true = ibat**2 * r0_true
     pdc_true = uocv_true * ibat - qgen_true
-    aux = (
-        result["u_pi"] * p.P_pump_in
-        + result["u_po"] * p.P_pump_out
-        + result["u_lh"] * p.P_heat_liquid
-        + result["u_ch"] * p.P_heat_cont
-    )
+    p_heat_liquid_w = np.asarray(result.get("P_heat_liquid_w", result["u_lh"] * p.P_heat_liquid), dtype=float)
+    p_heat_cont_w = np.asarray(result.get("P_heat_cont_w", result["u_ch"] * p.P_heat_cont), dtype=float)
+    aux = result["u_pi"] * p.P_pump_in + result["u_po"] * p.P_pump_out + p_heat_liquid_w + p_heat_cont_w
     pbess_true = pdc_true - p.mu_pcs * np.abs(pdc_true) - aux
     model_balance_kw = (
         result["pv_use_kw"]
@@ -4640,7 +4668,7 @@ def write_summary(p: SimpleNamespace, result: dict | None, args, path: Path) -> 
         "- `SOC/T_bat` 保留 SOS2 断点并由二维权重 `w_st` 映射；电流不再使用全局三维 `w_pack`，改用 `rho_i2[t,soc,temp,current]` 将电流分摊到 SOC-T 网格。",
         "- `I_bat = sum(I_k*rho_i2)`，`Q_gen_pack = sum(R0_ab*I_k^2*rho_i2)`，`P_dc_pack = sum((OCV_a*I_k - R0_ab*I_k^2)*rho_i2)`；`--current-mode continuous` 允许电流在断点间线性组合，`--current-mode discrete` 强制每个时段只选择一个电流断点。",
         "- PCS 损耗按文档定义为 `P_PCS,Loss = μ·|P_bat|`，引入 `P_dc_abs >= ±P_dc_pack`，`P_BESS = P_dc_pack - μ·P_dc_abs - aux`，充放电对称损耗。",
-        "- 终端温度按 IMEX 末步动力学算到 `T_*_end`，与 `SOC_end` 一同用于终端约束/惩罚。",
+        "- 调度曲线最后一点按初始 SOC/液冷罐温度/舱体温度设置硬约束；`SOC_end/T_*_end` 保留为末步动力学诊断值。",
         "- 电加热和泵耗进入功率平衡；原富余风光预热项保留，但新增全时段温度区间、终端储热和外循环散热惩罚。",
         "- 外循环 `Q_tamb>0` 被计入热量倾倒诊断；当电池或水箱确实过热时仍可散热。",
         "",
@@ -4672,7 +4700,8 @@ def write_summary(p: SimpleNamespace, result: dict | None, args, path: Path) -> 
             f"- 外循环散热/热量倾倒: {result['heat_dump_kwh_th']:.3f} kWh_th",
             f"- 富余风光时段: {checks['renewable_surplus_hours']:.3f} h",
             f"- 富余风光时段内启用电加热: {checks['heated_during_surplus_hours']:.3f} h",
-            f"- 末端 SOC: {result['SOC_end'] * 100:.3f}%",
+            f"- 调度末端 SOC: {result['SOC'][-1] * 100:.3f}%",
+            f"- 末步后 SOC 诊断值: {result['SOC_end'] * 100:.3f}%",
             f"- 富余风光预热短缺项: {result['preheat_short_score']:.6f} ℃·h",
             f"- 电池舒适区偏差项: {result['bat_band_score']:.6f} ℃·h",
             f"- 液冷罐储热区偏差项: {result['tank_band_score']:.6f} ℃·h",
@@ -4812,10 +4841,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--current-segments", type=int, default=10, help="Current segmentation count for I^2R/Pdc PWL. Default is 10 segments, which creates 11 current breakpoints.")
     parser.add_argument("--current-mode", choices=["continuous", "discrete"], default="continuous", help="Treat battery current as a continuous PWL variable or force it to one discrete breakpoint per period.")
     parser.add_argument("--soc-grid-width", type=float, default=0.1, help="SOC lookup grid width for R0/OCV linearization. Default is 0.1; use 0.05 for finer SOC lookup.")
-    parser.add_argument("--initial-soc", type=float, default=None, help="Battery initial SOC. The terminal SOC is constrained to the same value.")
+    parser.add_argument("--initial-soc", type=float, default=None, help="Battery initial SOC. The dispatch terminal SOC is constrained to the same value.")
     parser.add_argument("--initial-t-bat-c", type=float, default=None, help="Initial cell temperature in C.")
-    parser.add_argument("--initial-t-tank-c", type=float, default=None, help="Initial liquid tank temperature in C. The terminal liquid tank temperature is constrained to the same value.")
-    parser.add_argument("--initial-t-cont-c", type=float, default=None, help="Initial container temperature in C. The terminal container temperature is constrained to the same value.")
+    parser.add_argument("--initial-t-tank-c", type=float, default=None, help="Initial liquid tank temperature in C. The dispatch terminal liquid tank temperature is constrained to the same value.")
+    parser.add_argument("--initial-t-cont-c", type=float, default=None, help="Initial container temperature in C. The dispatch terminal container temperature is constrained to the same value.")
     parser.add_argument("--current-points", type=int, default=None, help="Deprecated: current breakpoint count. Prefer --current-segments.")
     parser.add_argument("--i-points", type=int, default=None, help="Deprecated alias for --current-points.")
     parser.add_argument("--strict-current-sos2", action="store_true", help="Add SOS2 constraints to each SOC-T current split; intended for short tests.")
@@ -5198,7 +5227,10 @@ def main(argv: list[str] | None = None) -> int:
         checks = result["checks"]
         print("-" * 72)
         print(f"Status: {result['status']}, gap={result['gap'] * 100:.3f}%, bound={result['best_bound']:.6g}, time={result['time_s']:.1f}s")
-        print(f"Fuel={result['fuel_kg']:.2f} kg, curtailment={result['curt_kwh']:.2f} kWh, final SOC={result['SOC_end'] * 100:.2f}%")
+        print(
+            f"Fuel={result['fuel_kg']:.2f} kg, curtailment={result['curt_kwh']:.2f} kWh, "
+            f"dispatch final SOC={result['SOC'][-1] * 100:.2f}%, post-step SOC={result['SOC_end'] * 100:.2f}%"
+        )
         print(f"Model balance residual max={checks['model_balance_max_kw']:.9f} kW")
         print(f"PWL physical replay deviation max/avg={checks['pbess_physical_max_kw']:.4f}/{checks['pbess_physical_avg_kw']:.4f} kW")
         print(f"Thermal surplus hours={checks['renewable_surplus_hours']:.2f} h, heated in surplus={checks['heated_during_surplus_hours']:.2f} h")
